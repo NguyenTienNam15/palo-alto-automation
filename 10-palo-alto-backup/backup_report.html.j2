@@ -1,0 +1,94 @@
+<!-- backup_report.html.j2 -->
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        h1 {
+            color: #0066cc;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 10px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .success {
+            color: green;
+            font-weight: bold;
+        }
+        .failed {
+            color: red;
+            font-weight: bold;
+        }
+        .summary {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f2f2f2;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Palo Alto Networks Backup Report</h1>
+    
+    <div>
+        <strong>Date:</strong> {{ backup_timestamp | regex_replace('(\\d{4})(\\d{2})(\\d{2})', '\\1-\\2-\\3') }}
+        <br>
+        <strong>Time:</strong> {{ ansible_date_time.time if ansible_date_time is defined else lookup('pipe', 'date +%H:%M:%S') }}
+    </div>
+    
+    <table>
+        <tr>
+            <th>Device</th>
+            <th>Serial Number</th>
+            <th>Status</th>
+            <th>Details</th>
+        </tr>
+        {% for result in backup_results %}
+        <tr>
+            <td>{{ result.device }}</td>
+            <td>{{ result.serial | default('N/A') }}</td>
+            <td class="{{ 'success' if result.status == 'Success' else 'failed' }}">{{ result.status }}</td>
+            <td>
+                {% if result.status == 'Success' %}
+                    File: {{ result.path | replace('/', '\\') }}
+                {% else %}
+                    Error: {{ result.error }}
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    
+    <div class="summary">
+        <h3>Summary</h3>
+        <p>
+            <strong>Total Devices:</strong> {{ backup_results | length }}<br>
+            <strong>Successful:</strong> {{ backup_results | selectattr('status', 'equalto', 'Success') | list | length }}<br>
+            <strong>Failed:</strong> {{ backup_results | selectattr('status', 'equalto', 'Failed') | list | length }}<br>
+        </p>
+    </div>
+    
+    <p>
+        <small>This is an automated email from the Palo Alto Networks backup system. Please do not reply to this email.</small>
+    </p>
+</body>
+</html>

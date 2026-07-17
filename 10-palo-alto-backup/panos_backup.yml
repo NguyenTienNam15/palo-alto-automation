@@ -1,0 +1,119 @@
+---
+# direct_windows_backup_playbook.yml
+- name: Backup Palo Alto Networks Devices Directly to Windows
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+    windows_backup_dir: "C:\\PaloAltoBackups" 
+    backup_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+    max_backups_to_keep: 4
+    # Email configuration
+    smtp_host: "{{ smtp_host | default('smtp.example.com') }}"
+    smtp_port: "{{ smtp_port | default('587') }}"
+    smtp_username: "{{ smtp_username | default('backup@example.com') }}"
+    smtp_password: "{{ smtp_password | default('password') }}"
+    mail_from: "{{ mail_from | default('backup@example.com') }}"
+    mail_to: "{{ mail_to | default('admin@example.com') }}"
+    # For report summary
+    backup_results: []
+  
+  tasks:
+    # Đảm bảo thư mục backup cho Panorama tồn tại
+    - name: Ensure Panorama backup directory exists on Windows
+      ansible.windows.win_file:
+        path: "{{ windows_backup_dir }}\\panorama"
+        state: directory
+      delegate_to: windows_server
+    
+    # Export và lưu cấu hình Panorama trực tiếp sang Windows
+    - name: Export Panorama configuration
+      paloaltonetworks.panos.panos_export:
+        provider: '{{ provider }}'
+        category: 'configuration'
+        filename: 'running-config.xml'
+      
+    - name: Get Panorama config
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ provider }}'
+        cmd: 'show config saved running-config.xml'
+      register: config_content
+    
+    - name: Save Panorama configuration directly to Windows
+      ansible.windows.win_copy:
+        content: "{{ config_content.stdout_xml }}"
+        dest: "{{ windows_backup_dir }}\\panorama\\running-config-{{ backup_timestamp }}.xml"
+      delegate_to: windows_server
+      register: panorama_backup_result
+    
+    # Cập nhật trạng thái backup cho Panorama
+    - name: Update backup results for Panorama
+      set_fact:
+        backup_results: "{{ backup_results + [{'device': 'Panorama', 'status': 'Success', 'timestamp': backup_timestamp, 'path': windows_backup_dir + '\\panorama\\running-config-' + backup_timestamp + '.xml'}] }}"
+      when: panorama_backup_result is succeeded
+    
+    - name: Update backup results for Panorama - Failed
+      set_fact:
+        backup_results: "{{ backup_results + [{'device': 'Panorama', 'status': 'Failed', 'timestamp': backup_timestamp, 'error': panorama_backup_result.msg|default('Unknown error')}] }}"
+      when: panorama_backup_result is failed
+    
+    # Giữ lại 4 bản backup mới nhất cho Panorama
+    - name: Find all Panorama backup files on Windows
+      ansible.windows.win_find:
+        paths: "{{ windows_backup_dir }}\\panorama"
+        patterns: "running-config-*.xml"
+      register: panorama_backups
+      delegate_to: windows_server
+    
+    - name: Sort Panorama backups by creation time
+      set_fact:
+        sorted_panorama_backups: "{{ panorama_backups.files | sort(attribute='creationtime', reverse=true) }}"
+    
+    - name: Remove old Panorama backups
+      ansible.windows.win_file:
+        path: "{{ item.path }}"
+        state: absent
+      with_items: "{{ sorted_panorama_backups[max_backups_to_keep:] }}"
+      when: sorted_panorama_backups | length > max_backups_to_keep
+      delegate_to: windows_server
+    
+    # Lấy và xử lý các thiết bị đã kết nối
+    - name: Get all devices
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ provider }}"
+        cmd: "show devices all"
+      register: devices_output
+    
+    - name: Parse devices information
+      set_fact:
+        device_providers: "{{ devices_output.stdout | from_json | json_query('response.result.devices.entry[*].{hostname: hostname, ip: \"ip-address\", serial: serial, connected: connected}') }}"
+    
+    - name: Filter connected devices
+      set_fact:
+        connected_devices: "{{ device_providers | selectattr('connected', 'eq', 'yes') | list }}"
+    
+    # Tạo task file riêng cho mỗi thiết bị
+    - name: Create backup task file for device
+      include_tasks: backup_device_to_windows.yml
+      loop: "{{ connected_devices }}"
+      loop_control:
+        loop_var: device
+        label: "{{ device.hostname }} ({{ device.serial }})"
+    
+    # Cuối cùng, gửi báo cáo backup qua email
+    - name: Send backup report via email
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: "PaloAlto Backup Report - {{ backup_timestamp }}"
+        body: "{{ lookup('template', 'backup_report.html.j2') }}"
+        subtype: html
+      delegate_to: localhost

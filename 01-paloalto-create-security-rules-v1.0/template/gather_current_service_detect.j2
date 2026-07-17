@@ -1,0 +1,5 @@
+{%- set result = [] -%}
+{%- for fw_svc in service_objects.gathered -%}
+  {%- set _ = result.append(fw_svc.protocol + '/' + fw_svc.destination_port) -%}
+{%- endfor -%}
+{{ result }}

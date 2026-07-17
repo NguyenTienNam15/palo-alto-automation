@@ -1,0 +1,55 @@
+{# update_policies.j2 #}
+{%- set result = [] -%}
+{%- for map_rule in mapped_rules -%}
+  {%- for rc in sec_rules.results -%}
+    {%- set outer_found_match = [false] -%}
+    {%- if not outer_found_match[0] -%}
+      {%- for sec_rule in rc.gathered -%}
+      
+        {# Sử dụng mảng matches để theo dõi các trường khớp #}
+        {%- set matches = [] -%}
+        {# Kiểm tra source_ip khớp #}
+        {%- if map_rule.source_ip|sort == sec_rule.source_ip|sort -%}
+          {%- set _ = matches.append('source_ip') -%}
+        {%- endif -%}
+      
+        {# Kiểm tra destination_ip khớp #}
+        {%- if map_rule.destination_ip|sort == sec_rule.destination_ip|sort -%}
+          {%- set _ = matches.append('destination_ip') -%}
+        {%- endif -%}
+      
+        {# Kiểm tra application khớp #}
+        {%- if map_rule.application|list|sort == sec_rule.application|sort -%}
+          {%- set _ = matches.append('application') -%}
+        {%- endif -%}
+      
+        {# Kiểm tra service khớp #}
+        {%- if map_rule.service|sort == sec_rule.service|sort -%}
+          {%- set _ = matches.append('service') -%}
+        {%- endif -%}
+
+        {# Kiểm tra schedule khớp #}
+        {%- if map_rule.schedule|sort == sec_rule.schedule|sort -%}
+          {%- set _ = matches.append('service') -%}
+        {%- endif -%}
+      
+        {# Nếu có 3 trường khớp thì thêm vào kết quả và dừng tìm kiếm #}
+        {%- if matches|length >= 4 and not outer_found_match[0] -%}
+          {%- set _ = result.append({
+                'column': map_rule.column,
+                'rule_name': sec_rule.rule_name,
+                'device_group': map_rule.device_group,
+                'source_ip': map_rule.source_ip,
+                'destination_ip': map_rule.destination_ip,
+                'application': map_rule.application,
+                'service': map_rule.service,
+                'schedule': map_rule.schedule,
+                'refer_rule': map_rule.rule_name
+            }) -%}
+          {%- set _ = outer_found_match.__setitem__(0, true) -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%} 
+  {%- endfor -%}
+{%- endfor -%}
+{{ result }}

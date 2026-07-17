@@ -1,0 +1,82 @@
+- name: Delete Security Rule
+  hosts: localhost 
+  gather_facts: false
+
+  vars:
+    device:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+ 
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+    - name: Find all CSV files in the specified directory 
+      find:
+        paths: "./csv_file"
+        patterns: "*.csv"
+        recurse: yes
+      register: csv_files
+
+    - name: Remove lines with only commas using sed (in-place)
+      shell: sed -i '/^[,[:space:]]*$/d' "{{ csv_files.files[0].path }}"
+      args:
+        executable: /bin/bash
+
+    - name: Read CSV file
+      community.general.read_csv:
+        path: "{{ csv_files.files[0].path }}"
+        # delimiter: ';'
+        key: "Column"
+      register: csv_data
+
+    - name: Create unique device group list
+      set_fact:
+        device_group: "{{ csv_data.list | map(attribute='DeviceGroup') | unique | list }}"
+
+    - name: Gather security rules by UUID
+      paloaltonetworks.panos.panos_security_rule:
+        provider: '{{ device }}'
+        state: 'gathered'
+        device_group: "{{ item.DeviceGroup }}"
+        gathered_filter: "uuid == '{{ item.UUID }}'"
+        rulebase: 'post-rulebase'
+      loop: "{{ csv_data.list }}"
+      register: gathered_rules
+
+    - name: Delete security rules
+      paloaltonetworks.panos.panos_security_rule:
+        provider: '{{ device }}'
+        state: 'absent'
+        device_group: "{{ item.item.DeviceGroup }}"
+        rule_name: "{{ item.gathered[0].rule_name }}"
+        rulebase: 'post-rulebase'
+      loop: "{{ gathered_rules.results }}"
+      when: item.gathered | length > 0
+
+
+    ### Commit config on Panorama
+    - name: Commit candidate configs on Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: '{{ device }}'
+        admins: '{{ panos_username }}'
+      register: commitresults
+      when: gathered_rules | length > 0  
+
+    ### Push config to device groups
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    - name: Push device group configs
+      paloaltonetworks.panos.panos_commit_push:
+        provider: '{{ device }}'
+        style: 'device group'
+        admins: '[{{ panos_username }}]'
+        name: '{{ item.name }}'
+      loop: "{{ device_groups.gathered }}"
+      when: commitresults is changed

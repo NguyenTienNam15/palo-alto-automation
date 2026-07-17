@@ -1,0 +1,4 @@
+﻿Column,DeviceGroup,ObjectType,ObjectName
+1,HCM_PA_01,AddressGroup,aa
+2,share,Address,ceminar-04
+4,HCM_PA_01,Service,deleting

@@ -1,0 +1,1 @@
+Đi đến trang https://controller.msb-demo.com:8443/#/jobs để kiểm tra Logs

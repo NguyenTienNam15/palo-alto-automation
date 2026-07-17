@@ -1,0 +1,27 @@
+[ALERT] SECURITY RULES EXPIRING SOON
+
+{% if affected_rules is defined and (affected_rules|from_yaml)|length > 0 %}
+Expiration Tickets:
+
+{% for rule in affected_rules|from_yaml %}
+{% if rule.description == item %}
+  - Ticket Name: {{ rule.rule_name }}
+    Source Address: {% for addr in rule.source_ip %}{% if addr != 'any' %}{% if shared_address_objects.gathered is defined %}{% set addr_obj = (shared_address_objects.gathered | selectattr('name', 'equalto', addr) | list) %}{% if addr_obj %}{{ addr_obj[0].value }}{% else %}{{ addr }}{% endif %}{% else %}{{ addr }}{% endif %}{% else %}any{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+
+    Destination Address: {% for addr in rule.destination_ip %}{% if addr != 'any' %}{% if shared_address_objects.gathered is defined %}{% set addr_obj = (shared_address_objects.gathered | selectattr('name', 'equalto', addr) | list) %}{% if addr_obj %}{{ addr_obj[0].value }}{% else %}{{ addr }}{% endif %}{% else %}{{ addr }}{% endif %}{% else %}any{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+
+    Service Details: {% for svc_name in rule.service %}{% if svc_name == 'application-default' %}Application Default{% else %}{% if service_objects.gathered is defined %}{% set svc = (service_objects.gathered | selectattr('name', 'equalto', svc_name) | list | first) %}{{ svc.destination_port }}/{{ svc.protocol }}{% else %}Port/Protocol info not found{% endif %}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+
+    Schedule Expiration Date: {% set schedule = (non_recurring_schedules.gathered | selectattr('name', 'equalto', rule.schedule) | list | first) %}{% set end_dates = [] %}{% for datetime in schedule.non_recurring_date_time %}{% set end_date = datetime.split('-')[1].split('@')[0] %}{% if end_date >= current_date and end_date <= warning_date %}{{ end_dates.append(end_date) }}{% endif %}{% endfor %}{{ end_dates | join(', ') }}
+
+
+{% endif %}
+{% endfor %}
+Please review and update these rules if needed.
+{% else %}
+No security rules are affected by expiring schedules in the next {{ warning_days }} days.
+{% endif %}
+
+---
+This is an automated message from PAN-OS Security Rules Monitor
+Do not reply to this email.

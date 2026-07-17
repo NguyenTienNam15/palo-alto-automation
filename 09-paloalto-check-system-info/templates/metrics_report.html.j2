@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Metrics Report</title>
+  <style>
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid black;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+    .critical {
+      color: red;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Metrics Report</h1>
+  {% for item in device_metrics %}
+    <h2>Device {{ item.hostname }} ({{ item.ip }})</h2>
+    <table>
+      <tr>
+        <th>Metric</th>
+        <th>Value</th>
+      </tr>
+      <tr>
+        <td>CPU Usage</td>
+        <td>{{ (100 - (item.cpu_idle | float)) | round(1) }}%</td>
+      </tr>
+      <tr>
+        <td>Memory Usage</td>
+        <td>{{ ((item.memory_used | float) / (item.memory_total | float) * 100) | round(1) }}%</td>
+      </tr>
+      <tr>
+        <td>HA State</td>
+        <td>{{ item.ha_state }}</td>
+      </tr>
+      <tr>
+        <td>Disk Space</td>
+        <td><pre>{{ (item.disk_space | from_json).response.result }}</pre></td>
+      </tr>
+    </table>
+    {% if ((100 - (item.cpu_idle | float)) > 80) or ((item.memory_used | float) / (item.memory_total | float) * 100 > 80) %}
+      <p class="critical">Critical: CPU or Memory usage is above 80%</p>
+    {% endif %}
+    {% if item.ha_state != 'HA not enabled' and item.ha_state not in ['active', 'passive'] %}
+      <p class="critical">Critical: HA State is not Active or Passive</p>
+    {% endif %}
+  {% endfor %}
+</body>
+</html>

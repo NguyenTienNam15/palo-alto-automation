@@ -1,0 +1,6 @@
+﻿Column;DeviceGroup;ObjectType;ObjectName
+1;shared;AddressGroup;adgrtest3
+2;shared;Address;address-object15
+4;shared;Service;dsst-ddd
+6;HN_PA;DynamicUserGroup;ssss
+7;shared;Schedule;tess

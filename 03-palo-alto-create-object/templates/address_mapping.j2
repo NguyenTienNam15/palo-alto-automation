@@ -1,0 +1,27 @@
+{% set result = [] %}
+{% for member in raw_members %}
+  {# Check if it's an IP/Network with IP mapping #}
+  {% if address_mapping is defined and address_mapping[member] is defined %}
+    {% set _ = result.append(address_mapping[member]) %}
+  {# Check if it's a domain with domain mapping #}
+  {% elif domain_mapping is defined and domain_mapping[member] is defined %}
+    {% set _ = result.append(domain_mapping[member]) %}
+  {# For domain patterns (containing dot but not IP-like) try to find matching object #}
+  {% elif '.' in member and not (member | regex_search('^\\d+\\.\\d+\\.\\d+\\.\\d+(/\\d+)?$') or member | regex_search('^\\d+\\.\\d+\\.\\d+\\.\\d+-\\d+\\.\\d+\\.\\d+\\.\\d+$')) %}
+    {% set found = false %}
+    {% for addr in address_object.gathered %}
+      {% if addr.address_type == 'fqdn' and addr.value == member %}
+        {% set _ = result.append(addr.name) %}
+        {% set found = true %}
+        {% break %}
+      {% endif %}
+    {% endfor %}
+    {% if not found %}
+      {% set _ = result.append(member) %}
+    {% endif %}
+  {# Otherwise keep as is for new object creation #}
+  {% else %}
+    {% set _ = result.append(member) %}
+  {% endif %}
+{% endfor %}
+{{ result }}

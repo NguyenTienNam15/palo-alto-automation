@@ -1,0 +1,70 @@
+﻿<pre>
+Dear Team,
+
+This is an automated report of security rules analysis based on your search criteria.
+
+==========================================
+SEARCH CRITERIA
+==========================================
+
+Address Patterns:
+{% for addr in search_addresses %}
+  • {{ addr }}
+{% endfor %}
+
+Service Patterns:
+{% for svc in search_services %}
+  • {{ svc }}
+{% endfor %}
+
+
+==========================================
+RESULTS
+==========================================
+
+{% if matched_rules.results | selectattr('gathered', 'defined') | list | length > 0 %}
+Found {{ matched_rules.results | selectattr('gathered', 'defined') | map(attribute='gathered') | flatten | list | length }} matching rules.
+
+{% for result in matched_rules.results %}
+{% if result.gathered is defined and result.gathered | length > 0 %}
+
+------------------------------------------
+Device Group: {{ result.item.name }}
+------------------------------------------
+
+{% for rule in result.gathered %}
+Rule Details:
+  • Name: {{ rule.rule_name }}
+  • Description: {{ rule.description | default('N/A') }}
+  • Action: {{ rule.action | upper }}
+
+  Source Addresses:
+{% for src in rule.source_ip %}
+    • {{ src }}
+{% endfor %}
+
+  Destination Addresses:
+{% for dst in rule.destination_ip %}
+    • {{ dst }}
+{% endfor %}
+
+  Services:
+{% for svc in rule.service %}
+    • {{ svc }}
+{% endfor %}
+
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{% else %}
+No security rules were found matching the specified criteria.
+
+{% endif %}
+
+Best regards,
+Security Team
+
+-------------------------------------------
+Note: This is an automated report. Please do not reply to this email.
+</pre>

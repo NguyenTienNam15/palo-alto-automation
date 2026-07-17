@@ -1,0 +1,159 @@
+- name: Find and Replace Values in Security Rules on Panorama
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    search_value: "{{ search_value | default('') }}"  # Giá trị muốn tìm (ví dụ: 192.168.1.0/24 hoặc tcp/80)
+    replace_value: "{{ replace_value | default('') }}"  # Giá trị muốn thay thế (ví dụ: 10.0.0.0/24 hoặc tcp/443)
+    field_type: "{{ field_type | default('address') }}"  # Loại trường (address, service)
+    specific_rulebase: "post-rulebase"  # Loại rulebase (pre-rulebase, rulebase, post-rulebase)
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+
+  tasks:
+    - name: Validate input parameters
+      assert:
+        that:
+          - search_value | length > 0
+          - replace_value | length > 0
+          - field_type in ['address', 'service']
+          - specific_rulebase in ['pre-rulebase', 'rulebase', 'post-rulebase']
+        fail_msg: "Required parameters are missing or invalid. Please provide search_value, replace_value, field_type (must be one of: address, service), rulebase (must be one of: pre-rulebase, rulebase, post-rulebase), ip_address, and password."
+    
+    - name: Gathered Device Group
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ provider }}"
+        state: gathered
+        gathered_filter: "*"
+      register: panos_device_group_list
+
+    - name: Extract device group names and add "shared"
+      ansible.builtin.set_fact:
+        device_group_list: "{{ panos_device_group_list.gathered | map(attribute='name') | list + ['shared'] }}"
+    
+    - name: Show device groups that will be processed
+      debug:
+        var: device_group_list
+    
+    # TASK 1: Tìm object có giá trị phù hợp với search_value
+    - name: Find address object with search value
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        state: gathered
+        gathered_filter: "name == {{ search_value }}"
+      register: search_address_objects
+      when: field_type == 'address'
+      
+    - name: Find service object with search value
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        state: gathered
+        gathered_filter: "name == {{ search_value }}"
+      register: search_service_objects
+      when: field_type == 'service'
+
+    - name: Set search object name for address
+      set_fact:
+        search_object_name: "{{ search_address_objects.gathered[0].name }}"
+      when: >
+        field_type == 'address' and 
+        search_address_objects is defined and 
+        search_address_objects.gathered is defined and 
+        search_address_objects.gathered | length > 0
+        
+    - name: Set search object name for service
+      set_fact:
+        search_object_name: "{{ search_service_objects.gathered[0].name }}"
+      when: >
+        field_type == 'service' and 
+        search_service_objects is defined and 
+        search_service_objects.gathered is defined and 
+        search_service_objects.gathered | length > 0
+        
+    - name: Show found search object
+      debug:
+        msg: "Found object '{{ search_object_name }}' with value '{{ search_value }}'"
+      when: search_object_name is defined
+        
+    - name: Stop if no object found with search value
+      fail:
+        msg: "No objects found with value '{{ search_value }}'. Please check the value or create the object first."
+      when: >
+        (field_type == 'address' and (search_address_objects.gathered is not defined or search_address_objects.gathered | length == 0)) or
+        (field_type == 'service' and (search_service_objects.gathered is not defined or search_service_objects.gathered | length == 0))
+    
+    # TASK 2: Tìm object có giá trị phù hợp với replace_value
+    - name: Find address object with replace value
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        state: gathered
+        gathered_filter: "name contains {{ replace_value }}"
+      register: replace_address_objects
+      when: field_type == 'address'
+      
+    - name: Find service object with replace value
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        state: gathered
+        gathered_filter: "name contains {{ replace_value }}"
+      register: replace_service_objects
+      when: field_type == 'service'
+    
+    - name: Set replace object name for address
+      set_fact:
+        replace_object_name: "{{ replace_address_objects.gathered[0].name }}"
+      when: >
+        field_type == 'address' and 
+        replace_address_objects is defined and 
+        replace_address_objects.gathered is defined and 
+        replace_address_objects.gathered | length > 0
+        
+    - name: Set replace object name for service
+      set_fact:
+        replace_object_name: "{{ replace_service_objects.gathered[0].name }}"
+      when: >
+        field_type == 'service' and 
+        replace_service_objects is defined and 
+        replace_service_objects.gathered is defined and 
+        replace_service_objects.gathered | length > 0
+        
+    - name: Show found replace object
+      debug:
+        msg: "Found object '{{ replace_object_name }}' with value '{{ replace_value }}'"
+      when: replace_object_name is defined
+        
+    - name: Stop if no object found with replace value
+      fail:
+        msg: "No objects found with value '{{ replace_value }}'. Please check the value or create the object first."
+      when: >
+        (field_type == 'address' and (replace_address_objects.gathered is not defined or replace_address_objects.gathered | length == 0)) or
+        (field_type == 'service' and (replace_service_objects.gathered is not defined or replace_service_objects.gathered | length == 0))
+    
+    # Sử dụng vòng lặp để xử lý từng device group
+    - name: Process each device group
+      include_tasks: process_device_group.yml
+      loop: "{{ device_group_list }}"
+      loop_control:
+        loop_var: current_device_group
+      
+    # Commit và push thay đổi
+    - name: Commit changes to Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: '{{ provider }}'
+        admins: '{{ panos_username }}'
+      register: commit_result
+      
+    - name: Show commit result
+      debug:
+        var: commit_result
+          
+    - name: Push changes to all device groups
+      paloaltonetworks.panos.panos_commit_push:
+        provider: "{{ provider }}"
+        style: 'device group'
+        name: "{{ item }}"
+        admins: '{{ panos_username }}'
+      loop: "{{ device_group_list }}"
+      when: item != 'shared'

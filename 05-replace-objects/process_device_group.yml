@@ -1,0 +1,67 @@
+---
+# File: process_device_group.yml
+# Tasks for processing a single device group
+
+- name: Process device group {{ current_device_group }}
+  block:
+    - name: Find security rules containing the search object name in {{ current_device_group }}
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        state: gathered
+        device_group: "{{ current_device_group }}"
+        rulebase: "{{ specific_rulebase }}"
+        gathered_filter: >-
+          {% if field_type == 'address' %}
+          source_ip contains {{ search_object_name }} or destination_ip contains {{ search_object_name }}
+          {% elif field_type == 'service' %}
+          service contains {{ search_object_name }}
+          {% endif %}
+      register: filtered_rules
+      
+    - name: Show found rules in {{ current_device_group }}
+      debug:
+        msg: "Found {{ filtered_rules.gathered | default([]) | length }} rules in device group {{ current_device_group }}"
+    
+    # TASK 4: Cập nhật các rules tìm thấy
+    - name: Update source_ip and destination_ip in affected rules for {{ current_device_group }}
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        state: replaced
+        rule_name: "{{ item.rule_name }}"
+        device_group: "{{ current_device_group }}"
+        rulebase: "{{ specific_rulebase }}"
+        source_ip: "{{ (item.source_ip | default([]) | difference([search_object_name])) + [replace_object_name] if (field_type == 'address' and item.source_ip is defined and search_object_name in (item.source_ip | default([]))) else (item.source_ip | default(omit)) }}"
+        destination_ip: "{{ (item.destination_ip | default([]) | difference([search_object_name])) + [replace_object_name] if (field_type == 'address' and item.destination_ip is defined and search_object_name in (item.destination_ip | default([]))) else (item.destination_ip | default(omit)) }}"
+      loop: "{{ filtered_rules.gathered | default([]) }}"
+      loop_control:
+        label: "{{ item.rule_name }}"
+      when: >
+        field_type == 'address' and
+        filtered_rules.gathered is defined and
+        filtered_rules.gathered | length > 0 and
+        ((item.source_ip is defined and search_object_name in (item.source_ip | default([]))) or
+        (item.destination_ip is defined and search_object_name in (item.destination_ip | default([]))))
+      
+    - name: Update service in affected rules for {{ current_device_group }}
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        state: replaced
+        rule_name: "{{ item.rule_name }}"
+        device_group: "{{ current_device_group }}"
+        rulebase: "{{ specific_rulebase }}"
+        service: "{{ (item.service | default([]) | difference([search_object_name])) + [replace_object_name] }}"
+      loop: "{{ filtered_rules.gathered | default([]) }}"
+      loop_control:
+        label: "{{ item.rule_name }}"
+      when: >
+        field_type == 'service' and 
+        filtered_rules.gathered is defined and 
+        filtered_rules.gathered | length > 0 and
+        item.service is defined and
+        search_object_name in (item.service | default([]))
+  
+  # Nếu lỗi xảy ra khi xử lý một device group, ghi lại lỗi và tiếp tục với device group tiếp theo
+  rescue:
+    - name: Log error for device group {{ current_device_group }}
+      debug:
+        msg: "Error processing device group {{ current_device_group }}: {{ ansible_failed_result }}"

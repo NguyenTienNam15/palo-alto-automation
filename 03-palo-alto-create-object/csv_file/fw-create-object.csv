@@ -1,0 +1,8 @@
+﻿Column;ObjectType;ObjectName;Location;Type;Value
+1;Address;demo-19-03-1;shared;ip-netmask;166.143.123.222
+2;Address;demo-19-03-2;shared;ip-range;10.1.1.1-10.1.1.33
+3;Address;demo-19-03-3;shared;fqdn;dantri.com.vn
+4;Service;demo-19-03-1;shared;tcp;567
+5;Service;demo-19-03-2;shared;udp;998
+6;AddressGroup;demo-19-03-4;shared;N/A;1.1.1.1,Address-lab,FQDN_gitlab.com
+7;ServiceGroup;demo-19-03-3;shared;N/A;service-tcp-221,service-tcp-223-226,demo-18-03-10

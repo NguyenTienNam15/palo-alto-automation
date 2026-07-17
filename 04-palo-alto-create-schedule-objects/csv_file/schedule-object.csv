@@ -1,0 +1,4 @@
+Column;Name;Type;Recurrence;DailyTime;NonRecurringDateTime;WeeklyMondayTime;WeeklyTuesdayTime;WeeklyWednesdayTime;WeeklyThursdayTime;WeeklyFridayTime;WeeklySaturdayTime;WeeklySundayTime
+1;demo-19-03-1;recurring;daily;09:00-13:00;;;;;;;;
+2;demo-19-03-2;recurring;weekly;;;;;14:00-21:00;17:00-19:00;17:00-19:00;;
+3;demo-19-03-3;non-recurring;;;2019/11/01@00:15-2019/11/28@00:30;;;;;;;

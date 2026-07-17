@@ -1,0 +1,254 @@
+---
+- name: Cleanup objects from Panorama based on CSV file
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+    
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+    
+    ### Read CSV File
+    - name: Find all CSV files in the specified directory
+      find:
+        paths: "./csv_file"
+        patterns: "*.csv"
+        recurse: yes
+      register: csv_files
+
+    - name: Read CSV file
+      community.general.read_csv:
+        path: "{{ csv_files.files[0].path }}"
+        delimiter: ';'
+        key: "Column"
+      register: csv_data
+    
+    - name: Gather applying device group
+      ansible.builtin.set_fact:
+        applying_device_group: "{{ applying_device_group | default([]) + [item.value.DeviceGroup] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    - name: Make unique device group
+      set_fact:
+        device_groups: "{{ applying_device_group | list | unique }}"
+
+    # Gather existing objects for each device group
+    - name: Gather Address Objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_addr_objects
+      loop: "{{ device_groups }}"
+
+    - name: Gather Address Groups
+      paloaltonetworks.panos.panos_address_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_addr_groups
+      loop: "{{ device_groups }}"
+
+    - name: Gather Service Objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_service_objects
+      loop: "{{ device_groups }}"
+
+    - name: Gather Service Group Objects
+      paloaltonetworks.panos.panos_service_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_service_gr_objects
+      loop: "{{ device_groups }}"
+
+    - name: Gather Dynamic User Groups
+      paloaltonetworks.panos.panos_dynamic_user_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_dug
+      loop: "{{ device_groups }}"
+
+    - name: Gather Schedule Objects
+      paloaltonetworks.panos.panos_schedule_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: existing_schedule
+      loop: "{{ device_groups }}"
+
+    - name: Prepare lists for object tracking
+      set_fact:
+        existing_objects: []
+        non_existing_objects: []
+
+    - name: Process each object from CSV
+      vars:
+        device_group_exists: |
+          {%- if item.value.ObjectType == 'Address' -%}
+            {%- set matches = existing_addr_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- elif item.value.ObjectType == 'AddressGroup' -%}
+            {%- set matches = existing_addr_groups.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- elif item.value.ObjectType == 'Service' -%}
+            {%- set matches = existing_service_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- elif item.value.ObjectType == 'ServiceGroup' -%}
+            {%- set matches = existing_service_gr_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- elif item.value.ObjectType == 'DynamicUserGroup' -%}
+            {%- set matches = existing_dug.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- elif item.value.ObjectType == 'Schedule' -%}
+            {%- set matches = existing_schedule.results | selectattr('item', 'eq', item.value.DeviceGroup) | list -%}
+            {{ matches | length > 0 }}
+          {%- else -%}
+            false
+          {%- endif -%}
+
+        temp_exists: |
+          {%- if device_group_exists | trim | bool -%}
+            {%- if item.value.ObjectType == 'Address' -%}
+              {%- set matches = existing_addr_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- elif item.value.ObjectType == 'AddressGroup' -%}
+              {%- set matches = existing_addr_groups.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- elif item.value.ObjectType == 'Service' -%}
+              {%- set matches = existing_service_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- elif item.value.ObjectType == 'ServiceGroup' -%}
+              {%- set matches = existing_service_gr_objects.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- elif item.value.ObjectType == 'DynamicUserGroup' -%}
+              {%- set matches = existing_dug.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- elif item.value.ObjectType == 'Schedule' -%}
+              {%- set matches = existing_schedule.results | selectattr('item', 'eq', item.value.DeviceGroup) | first -%}
+              {%- set object_names = matches.gathered | default([]) | map(attribute='name') | list -%}
+              {{ item.value.ObjectName in object_names }}
+            {%- else -%}
+              false
+            {%- endif -%}
+          {%- else -%}
+            false
+          {%- endif -%}
+      set_fact:
+        existing_objects: "{{ existing_objects + [item.value] if (temp_exists | trim | bool) else existing_objects }}"
+        non_existing_objects: "{{ non_existing_objects + [item.value] if not (temp_exists | trim | bool) else non_existing_objects }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    - name: Display results
+      debug:
+        msg: 
+          - "Objects {{ item.ObjectType }} name {{ item.ObjectName }} on Device Group  {{ item.DeviceGroup }} will be delete!"
+      loop: "{{ existing_objects }}"
+      loop_control:
+        label: msg
+
+    - name: Display results
+      debug:
+        msg: 
+          - "Objects {{ item.ObjectType }} name {{ item.ObjectName }} on Device Group  {{ item.DeviceGroup }} not found!"
+      loop: "{{ non_existing_objects }}"
+      loop_control:
+        label: msg
+
+    # Delete objects
+    - name: Delete Address Objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'Address'
+
+    - name: Delete Address Groups
+      paloaltonetworks.panos.panos_address_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'AddressGroup'
+
+    - name: Delete Service Objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'Service'
+
+    - name: Delete Service Group Objects
+      paloaltonetworks.panos.panos_service_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'ServiceGroup'
+
+    - name: Delete Dynamic User Groups
+      paloaltonetworks.panos.panos_dynamic_user_group:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'DynamicUserGroup'
+
+    - name: Delete Schedule Objects
+      paloaltonetworks.panos.panos_schedule_object:
+        provider: "{{ provider }}"
+        device_group: "{{ item.value.DeviceGroup }}"
+        state: "deleted"
+        name: "{{ item.value.ObjectName }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'Schedule'
+
+    - name: Commit candidate configs on Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: '{{ provider }}'
+      register: commitresults
+      when: existing_objects | length > 0
+
+    # Get and push to device groups
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    - name: Push device group configs
+      paloaltonetworks.panos.panos_commit_push:
+        provider: '{{ provider }}'
+        style: 'device group'
+        name: '{{ item.name }}'
+      loop: "{{ device_groups.gathered }}"
+      when: commitresults is changed

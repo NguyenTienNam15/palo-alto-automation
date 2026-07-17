@@ -1,0 +1,70 @@
+# backup_device_to_windows.yml
+---
+# Đảm bảo thư mục backup cho thiết bị tồn tại
+- name: Ensure device backup directory exists on Windows
+  ansible.windows.win_file:
+    path: "{{ windows_backup_dir }}\\devices\\{{ device.hostname }}"
+    state: directory
+  delegate_to: windows_server
+
+# Thiết lập thông tin thiết bị
+- name: Set device provider
+  set_fact:
+    device_provider:
+      ip_address: "{{ provider.ip_address }}"
+      username: "{{ provider.username }}"
+      password: "{{ provider.password }}"
+      serial_number: "{{ device.serial }}"
+
+# Export cấu hình thiết bị
+- name: Export device configuration
+  paloaltonetworks.panos.panos_export:
+    provider: '{{ device_provider }}'
+    category: 'configuration'
+    filename: 'running-config.xml'
+
+# Lấy nội dung cấu hình thiết bị
+- name: Get device config
+  paloaltonetworks.panos.panos_op:
+    provider: '{{ device_provider }}'
+    cmd: 'show config saved running-config.xml'
+  register: device_config_content
+
+# Lưu cấu hình thiết bị trực tiếp sang Windows
+- name: Save device configuration directly to Windows
+  ansible.windows.win_copy:
+    content: "{{ device_config_content.stdout_xml }}"
+    dest: "{{ windows_backup_dir }}\\devices\\{{ device.hostname }}\\running-config-{{ backup_timestamp }}.xml"
+  delegate_to: windows_server
+  register: device_backup_result
+  when: device_config_content is succeeded
+
+- name: Update backup results for device - Success
+  set_fact:
+    backup_results: "{{ backup_results + [{'device': device.hostname, 'serial': device.serial, 'status': 'Success', 'timestamp': backup_timestamp, 'path': windows_backup_dir + '/devices/' + device.hostname + '/running-config-' + backup_timestamp + '.xml'}] }}"
+  when: device_backup_result is succeeded
+
+- name: Update backup results for device - Failed
+  set_fact:
+    backup_results: "{{ backup_results + [{'device': device.hostname, 'serial': device.serial, 'status': 'Failed', 'timestamp': backup_timestamp, 'error': device_backup_result.msg|default('Unknown error')}] }}"
+  when: device_backup_result is failed
+
+# Giữ lại 4 bản backup mới nhất cho thiết bị
+- name: Find all device backup files on Windows
+  ansible.windows.win_find:
+    paths: "{{ windows_backup_dir }}\\devices\\{{ device.hostname }}"
+    patterns: "running-config-*.xml"
+  register: device_backups
+  delegate_to: windows_server
+
+- name: Sort device backups by creation time
+  set_fact:
+    sorted_device_backups: "{{ device_backups.files | sort(attribute='creationtime', reverse=true) }}"
+
+- name: Remove old device backups
+  ansible.windows.win_file:
+    path: "{{ item.path }}"
+    state: absent
+  with_items: "{{ sorted_device_backups[max_backups_to_keep:] }}"
+  when: sorted_device_backups | length > max_backups_to_keep
+  delegate_to: windows_server

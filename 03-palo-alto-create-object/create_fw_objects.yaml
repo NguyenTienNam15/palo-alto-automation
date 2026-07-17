@@ -1,0 +1,575 @@
+- name: Create Security Objects from CSV
+  hosts: localhost 
+  gather_facts: false
+
+  vars:
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+ 
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+    - name: Find all CSV files in the specified directory 
+      find:
+        paths: "./csv_file"
+        patterns: "*.csv"
+        recurse: yes
+      register: csv_files
+
+    - name: Remove lines with only commas using sed (in-place)
+      shell: sed -i '/^[,[:space:]]*$/d' "{{ csv_files.files[0].path }}"
+      args:
+        executable: /bin/bash
+
+    - name: Read CSV file
+      community.general.read_csv:
+        path: "{{ csv_files.files[0].path }}"
+        key: "Column"
+        delimiter: ';'
+      register: csv_data
+
+    - name: Debug CSV data
+      debug:
+        var: csv_data
+        verbosity: 1
+
+    ### Check for duplicate names within CSV
+    - name: Group items by ObjectType and count occurrences of ObjectName
+      set_fact:
+        address_name_counts: "{{ address_name_counts | default({}) | combine({item.value.ObjectName: (address_name_counts | default({}) | dict2items | selectattr('key', 'equalto', item.value.ObjectName) | map(attribute='value') | first | default(0) | int) + 1}) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'Address'
+    
+    - name: Find duplicate Address Object names
+      set_fact:
+        duplicate_address_names: "{{ duplicate_address_names | default([]) + [item.key] }}"
+      loop: "{{ address_name_counts | default({}) | dict2items }}"
+      when: item.value | int > 1
+    
+    - name: Fail if duplicate Address Object names found
+      fail:
+        msg: "Duplicate Address Object names found in CSV: {{ duplicate_address_names | join(', ') }}"
+      when: duplicate_address_names is defined and duplicate_address_names | length > 0
+      
+    - name: Group Address Group items and count occurrences
+      set_fact:
+        address_group_name_counts: "{{ address_group_name_counts | default({}) | combine({item.value.ObjectName: (address_group_name_counts | default({}) | dict2items | selectattr('key', 'equalto', item.value.ObjectName) | map(attribute='value') | first | default(0) | int) + 1}) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'AddressGroup'
+    
+    - name: Find duplicate Address Group Object names
+      set_fact:
+        duplicate_address_group_names: "{{ duplicate_address_group_names | default([]) + [item.key] }}"
+      loop: "{{ address_group_name_counts | default({}) | dict2items }}"
+      when: item.value | int > 1
+    
+    - name: Fail if duplicate Address Group Object names found
+      fail:
+        msg: "Duplicate Address Group Object names found in CSV: {{ duplicate_address_group_names | join(', ') }}"
+      when: duplicate_address_group_names is defined and duplicate_address_group_names | length > 0
+      
+    - name: Group Service items and count occurrences
+      set_fact:
+        service_name_counts: "{{ service_name_counts | default({}) | combine({item.value.ObjectName: (service_name_counts | default({}) | dict2items | selectattr('key', 'equalto', item.value.ObjectName) | map(attribute='value') | first | default(0) | int) + 1}) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'Service'
+    
+    - name: Find duplicate Service Object names
+      set_fact:
+        duplicate_service_names: "{{ duplicate_service_names | default([]) + [item.key] }}"
+      loop: "{{ service_name_counts | default({}) | dict2items }}"
+      when: item.value | int > 1
+    
+    - name: Fail if duplicate Service Object names found
+      fail:
+        msg: "Duplicate Service Object names found in CSV: {{ duplicate_service_names | join(', ') }}"
+      when: duplicate_service_names is defined and duplicate_service_names | length > 0
+      
+    - name: Group Service Group items and count occurrences
+      set_fact:
+        service_group_name_counts: "{{ service_group_name_counts | default({}) | combine({item.value.ObjectName: (service_group_name_counts | default({}) | dict2items | selectattr('key', 'equalto', item.value.ObjectName) | map(attribute='value') | first | default(0) | int) + 1}) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: item.value.ObjectType == 'ServiceGroup'
+    
+    - name: Find duplicate Service Group Object names
+      set_fact:
+        duplicate_service_group_names: "{{ duplicate_service_group_names | default([]) + [item.key] }}"
+      loop: "{{ service_group_name_counts | default({}) | dict2items }}"
+      when: item.value | int > 1
+    
+    - name: Fail if duplicate Service Group Object names found
+      fail:
+        msg: "Duplicate Service Group Object names found in CSV: {{ duplicate_service_group_names | join(', ') }}"
+      when: duplicate_service_group_names is defined and duplicate_service_group_names | length > 0
+      
+    ### Gather Objects
+    - name: Gather Address Object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ provider }}'
+        state: 'gathered'
+        gathered_filter: '*'
+      register: address_object
+
+    - name: Gather Address Group Object
+      paloaltonetworks.panos.panos_address_group:
+        provider: '{{ provider }}'
+        state: 'gathered'
+        gathered_filter: '*'
+      register: address_group
+
+    - name: Gather Service Object
+      paloaltonetworks.panos.panos_service_object:
+        provider: '{{ provider }}'
+        state: 'gathered'
+        gathered_filter: '*'
+      register: service_object
+
+    - name: Gather Service Group Object
+      paloaltonetworks.panos.panos_service_group:
+        provider: '{{ provider }}'
+        state: 'gathered'
+        gathered_filter: '*'
+      register: service_group
+
+    ### Identify objects with duplicate values on Panorama
+    - name: Identify Address Objects with duplicate values on Panorama
+      set_fact:
+        address_value_duplicates: "{{ address_value_duplicates | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Address'
+        - address_object.gathered | selectattr('value', 'equalto', item.value.Value) | selectattr('address_type', 'equalto', item.value.Type) | list | length > 0
+      vars:
+        existing_obj: "{{ address_object.gathered | selectattr('value', 'equalto', item.value.Value) | selectattr('address_type', 'equalto', item.value.Type) | first }}"
+
+    - name: Identify Service Objects with duplicate values on Panorama
+      set_fact:
+        service_value_duplicates: "{{ service_value_duplicates | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Service'
+        - service_object.gathered | selectattr('destination_port', 'equalto', item.value.Value) | selectattr('protocol', 'equalto', item.value.Type) | list | length > 0
+      vars:
+        existing_obj: "{{ service_object.gathered | selectattr('destination_port', 'equalto', item.value.Value) | selectattr('protocol', 'equalto', item.value.Type) | first }}"
+
+    # Identify Address Group Objects with identical values on Panorama
+    - name: Identify Address Group Objects with identical values on Panorama
+      vars:
+        csv_members: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list | sort }}"
+        match_found: "{{ address_group.gathered | selectattr('static_value', 'defined') | selectattr('static_value', 'equalto', csv_members) | list | length > 0 }}"
+        existing_obj: "{{ address_group.gathered | selectattr('static_value', 'defined') | selectattr('static_value', 'equalto', csv_members) | first }}"
+      set_fact:
+        address_group_value_duplicates: "{{ address_group_value_duplicates | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when:
+        - item.value.ObjectType == 'AddressGroup'
+        - match_found | default(false)
+
+    # Identify Service Group Objects with identical values on Panorama
+    - name: Identify Service Group Objects with identical values on Panorama
+      vars:
+        csv_members: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list | sort }}"
+        match_found: "{{ service_group.gathered | selectattr('value', 'defined') | selectattr('value', 'equalto', csv_members) | list | length > 0 }}"
+        existing_obj: "{{ service_group.gathered | selectattr('value', 'defined') | selectattr('value', 'equalto', csv_members) | first }}"
+      set_fact:
+        service_group_value_duplicates: "{{ service_group_value_duplicates | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when:
+        - item.value.ObjectType == 'ServiceGroup'
+        - match_found | default(false)
+
+    # Create lists of object names to skip (identical values)
+    - name: Create lists of object names to skip (identical values)
+      set_fact:
+        address_names_to_skip: "{{ address_value_duplicates | default([]) | map(attribute='csv_name') | list }}"
+        service_names_to_skip: "{{ service_value_duplicates | default([]) | map(attribute='csv_name') | list }}"
+        address_group_names_to_skip: "{{ address_group_value_duplicates | default([]) | map(attribute='csv_name') | list }}"
+        service_group_names_to_skip: "{{ service_group_value_duplicates | default([]) | map(attribute='csv_name') | list }}"
+      when: >
+        (address_value_duplicates is defined) or
+        (service_value_duplicates is defined) or
+        (address_group_value_duplicates is defined) or
+        (service_group_value_duplicates is defined)
+
+    ### Check for existing objects
+    - name: Check for existing Address Objects
+      set_fact:
+        existing_address_conflicts: "{{ existing_address_conflicts | default([]) + [item.value.ObjectName] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Address'
+        - address_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Check for existing Address Group Objects
+      set_fact:
+        existing_address_group_conflicts: "{{ existing_address_group_conflicts | default([]) + [item.value.ObjectName] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'AddressGroup'
+        - address_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Check for existing Service Objects
+      set_fact:
+        existing_service_conflicts: "{{ existing_service_conflicts | default([]) + [item.value.ObjectName] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Service'
+        - service_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Check for existing Service Group Objects
+      set_fact:
+        existing_service_group_conflicts: "{{ existing_service_group_conflicts | default([]) + [item.value.ObjectName] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'ServiceGroup'
+        - service_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    # Store existing objects for summary report
+    - name: Store existing Address Objects for summary
+      set_fact:
+        address_exists: "{{ address_exists | default([]) + [{'type': item.value.ObjectType, 'name': item.value.ObjectName, 'location': item.value.Location, 'value': item.value.Value, 'address_type': item.value.Type}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Address'
+        - address_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Store existing Address Group Objects for summary
+      set_fact:
+        address_group_exists: "{{ address_group_exists | default([]) + [{'type': item.value.ObjectType, 'name': item.value.ObjectName, 'location': item.value.Location, 'value': item.value.Value}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'AddressGroup'
+        - address_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Store existing Service Objects for summary
+      set_fact:
+        service_exists: "{{ service_exists | default([]) + [{'type': item.value.ObjectType, 'name': item.value.ObjectName, 'location': item.value.Location, 'value': item.value.Value, 'protocol': item.value.Type}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Service'
+        - service_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    - name: Store existing Service Group Objects for summary
+      set_fact:
+        service_group_exists: "{{ service_group_exists | default([]) + [{'type': item.value.ObjectType, 'name': item.value.ObjectName, 'location': item.value.Location, 'value': item.value.Value}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'ServiceGroup'
+        - service_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length > 0
+    
+    ### Check for value conflicts (objects with same value but different name)
+    - name: Check for Address Objects with duplicate values
+      set_fact:
+        address_value_conflicts: "{{ address_value_conflicts | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Address'
+        - address_object.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('value', 'equalto', item.value.Value) | list | length > 0
+      vars:
+        existing_obj: "{{ address_object.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('value', 'equalto', item.value.Value) | first }}"
+        
+    - name: Check for Service Objects with duplicate values
+      set_fact:
+        service_value_conflicts: "{{ service_value_conflicts | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Service'
+        - item.value.Type == 'tcp' or item.value.Type == 'udp'
+        - service_object.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('protocol', 'equalto', item.value.Type) | selectattr('destination_port', 'equalto', item.value.Value) | list | length > 0
+      vars:
+        existing_obj: "{{ service_object.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('protocol', 'equalto', item.value.Type) | selectattr('destination_port', 'equalto', item.value.Value) | first }}"
+
+    # Check for Address Group Objects with duplicate values
+    - name: Check for Address Group Objects with duplicate values
+      vars:
+        csv_members: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list | sort }}"
+        match_found: "{{ address_group.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('static_value', 'defined') | selectattr('static_value', 'equalto', csv_members) | list | length > 0 }}"
+        existing_obj: "{{ address_group.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('static_value', 'defined') | selectattr('static_value', 'equalto', csv_members) | first }}"
+      set_fact:
+        address_group_value_conflicts: "{{ address_group_value_conflicts | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when:
+        - item.value.ObjectType == 'AddressGroup'
+        - match_found | default(false)
+        
+    # Check for Service Group Objects with duplicate values
+    - name: Check for Service Group Objects with duplicate values
+      vars:
+        csv_members: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list | sort }}"
+        match_found: "{{ service_group.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('value', 'defined') | selectattr('value', 'equalto', csv_members) | list | length > 0 }}"
+        existing_obj: "{{ service_group.gathered | selectattr('name', 'ne', item.value.ObjectName) | selectattr('value', 'defined') | selectattr('value', 'equalto', csv_members) | first }}"
+      set_fact:
+        service_group_value_conflicts: "{{ service_group_value_conflicts | default([]) + [{'csv_name': item.value.ObjectName, 'value': item.value.Value, 'existing_name': existing_obj.name}] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      when:
+        - item.value.ObjectType == 'ServiceGroup'
+        - match_found | default(false)
+        
+    # Consolidated name conflict check
+    - name: Create consolidated list of all existing object conflicts
+      set_fact:
+        all_existing_conflicts: "{{ 
+          (existing_address_conflicts | default([])) +
+          (existing_address_group_conflicts | default([])) +
+          (existing_service_conflicts | default([])) +
+          (existing_service_group_conflicts | default([]))
+        }}"
+      when: >
+        (existing_address_conflicts is defined) or
+        (existing_address_group_conflicts is defined) or
+        (existing_service_conflicts is defined) or
+        (existing_service_group_conflicts is defined)
+    
+    # Fail with consolidated message if conflicts exist
+    - name: Print fail message
+      vars:
+        msg: |
+          The following objects already exist on Panorama with different configurations:
+          {% if existing_address_conflicts is defined and existing_address_conflicts | length > 0 %}
+          Address Objects: {{ existing_address_conflicts | join(', ') }}
+          {% endif %}
+          {% if existing_address_group_conflicts is defined and existing_address_group_conflicts | length > 0 %}
+          Address Group Objects: {{ existing_address_group_conflicts | join(', ') }}
+          {% endif %}
+          {% if existing_service_conflicts is defined and existing_service_conflicts | length > 0 %}
+          Service Objects: {{ existing_service_conflicts | join(', ') }}
+          {% endif %}
+          {% if existing_service_group_conflicts is defined and existing_service_group_conflicts | length > 0 %}
+          Service Group Objects: {{ existing_service_group_conflicts | join(', ') }}
+          {% endif %}
+      debug:
+        msg: "{{ msg.split('\n') }}"
+      when: all_existing_conflicts is defined and all_existing_conflicts | length > 0
+    
+    - name: Fail if any objects already exist on Panorama
+      fail:
+        msg: "Found duplicate object name. Check message above!"
+      when: all_existing_conflicts is defined and all_existing_conflicts | length > 0
+
+    ### Display report of skipped objects with identical values
+    - name: Display report of skipped objects with identical values
+      vars:
+        msg: |
+          Objects skipped due to identical values with existing objects on Panorama:
+          {% if address_value_duplicates is defined and address_value_duplicates | length > 0 %}
+          Address Objects:
+          {% for dup in address_value_duplicates %}
+            - CSV Name: {{ dup.csv_name }}, Value: {{ dup.value }}, Existing Object: {{ dup.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if service_value_duplicates is defined and service_value_duplicates | length > 0 %}
+          Service Objects:
+          {% for dup in service_value_duplicates %}
+            - CSV Name: {{ dup.csv_name }}, Value: {{ dup.value }}, Existing Object: {{ dup.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if address_group_value_duplicates is defined and address_group_value_duplicates | length > 0 %}
+          Address Group Objects:
+          {% for dup in address_group_value_duplicates %}
+            - CSV Name: {{ dup.csv_name }}, Value: {{ dup.value }}, Existing Object: {{ dup.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if service_group_value_duplicates is defined and service_group_value_duplicates | length > 0 %}
+          Service Group Objects:
+          {% for dup in service_group_value_duplicates %}
+            - CSV Name: {{ dup.csv_name }}, Value: {{ dup.value }}, Existing Object: {{ dup.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if not ((address_value_duplicates is defined and address_value_duplicates | length > 0) or
+                    (service_value_duplicates is defined and service_value_duplicates | length > 0) or
+                    (address_group_value_duplicates is defined and address_group_value_duplicates | length > 0) or
+                    (service_group_value_duplicates is defined and service_group_value_duplicates | length > 0)) %}
+          None
+          {% endif %}
+      debug:
+        msg: "{{ msg.split('\n') }}"
+
+    ### Create Objects
+    - name: Create Address Object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ provider }}'
+        name: "{{ item.value.ObjectName }}"
+        address_type: "{{ item.value.Type }}"
+        value: "{{ item.value.Value }}"
+        device_group: "{{ item.value.Location if item.value.Location != 'shared' else omit }}"
+      register: address_create_result
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Address'
+        - address_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length == 0
+        - item.value.ObjectName not in (address_names_to_skip | default([]))
+        
+    - name: Create Address Group Object
+      paloaltonetworks.panos.panos_address_group:
+        provider: '{{ provider }}'
+        name: "{{ item.value.ObjectName }}"
+        static_value: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list }}"
+        device_group: "{{ item.value.Location if item.value.Location != 'shared' else omit }}"
+      register: address_group_create_result
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'AddressGroup'
+        - address_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length == 0
+        - item.value.ObjectName not in (address_group_names_to_skip | default([]))
+        
+    - name: Create Service Object
+      paloaltonetworks.panos.panos_service_object:
+        provider: '{{ provider }}'
+        name: "{{ item.value.ObjectName }}"
+        protocol: "{{ item.value.Type }}"
+        destination_port: "{{ item.value.Value }}"
+        device_group: "{{ item.value.Location if item.value.Location != 'shared' else omit }}"
+      register: service_create_result
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'Service'
+        - service_object.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length == 0
+        - item.value.ObjectName not in (service_names_to_skip | default([]))
+        
+    - name: Create Service Group Object
+      paloaltonetworks.panos.panos_service_group:
+        provider: '{{ provider }}'
+        name: "{{ item.value.ObjectName }}"
+        value: "{{ (item.value.Value | trim).split(',') | select('ne', '') | list }}"
+        device_group: "{{ item.value.Location if item.value.Location != 'shared' else omit }}"
+      register: service_group_create_result
+      loop: "{{ csv_data.dict | dict2items }}"
+      when: 
+        - item.value.ObjectType == 'ServiceGroup'
+        - service_group.gathered | selectattr('name', 'equalto', item.value.ObjectName) | list | length == 0
+        - item.value.ObjectName not in (service_group_names_to_skip | default([]))
+
+    ### Summary reports
+    - name: Prepare summary of existing Address Objects
+      set_fact:
+        existing_address_summary: "{{ existing_address_summary | default([]) + ['Address ' + item.name + ' with ' + item.address_type] }}"
+      loop: "{{ address_exists | default([]) }}"
+      when: address_exists is defined
+      
+    - name: Prepare summary of existing Address Group Objects
+      set_fact:
+        existing_address_group_summary: "{{ existing_address_group_summary | default([]) + ['AddressGroup ' + item.name + ' with static members'] }}"
+      loop: "{{ address_group_exists | default([]) }}"
+      when: address_group_exists is defined
+      
+    - name: Prepare summary of existing Service Objects
+      set_fact:
+        existing_service_summary: "{{ existing_service_summary | default([]) + ['Service ' + item.name + ' with ' + item.protocol] }}"
+      loop: "{{ service_exists | default([]) }}"
+      when: service_exists is defined
+      
+    - name: Prepare summary of existing Service Group Objects
+      set_fact:
+        existing_service_group_summary: "{{ existing_service_group_summary | default([]) + ['ServiceGroup ' + item.name + ' with members'] }}"
+      loop: "{{ service_group_exists | default([]) }}"
+      when: service_group_exists is defined
+      
+    - name: Prepare combined list of existing objects
+      set_fact:
+        all_existing_objects: "{{ 
+          (existing_address_summary | default([])) +
+          (existing_address_group_summary | default([])) +
+          (existing_service_summary | default([])) +
+          (existing_service_group_summary | default([]))
+        }}"
+      when: >
+        (existing_address_summary is defined) or
+        (existing_address_group_summary is defined) or
+        (existing_service_summary is defined) or
+        (existing_service_group_summary is defined)
+      
+    - name: Display summary of existing objects
+      debug:
+        msg: "Objects already existing on Panorama: {{ all_existing_objects | default([]) | join(', ') if all_existing_objects | default([]) | length > 0 else 'None' }}"
+      when: all_existing_objects is defined
+    
+    - name: Collect created Address objects
+      set_fact:
+        created_address_objects: "{{ created_address_objects | default([]) + [item.item.value.ObjectName] }}"
+      loop: "{{ address_create_result.results | default([]) }}"
+      when: item is defined and item.changed | default(false)
+    
+    - name: Collect created Address Group objects
+      set_fact:
+        created_address_group_objects: "{{ created_address_group_objects | default([]) + [item.item.value.ObjectName] }}"
+      loop: "{{ address_group_create_result.results | default([]) }}"
+      when: item is defined and item.changed | default(false)
+    
+    - name: Collect created Service objects
+      set_fact:
+        created_service_objects: "{{ created_service_objects | default([]) + [item.item.value.ObjectName] }}"
+      loop: "{{ service_create_result.results | default([]) }}"
+      when: item is defined and item.changed | default(false)
+    
+    - name: Collect created Service Group objects
+      set_fact:
+        created_service_group_objects: "{{ created_service_group_objects | default([]) + [item.item.value.ObjectName] }}"
+      loop: "{{ service_group_create_result.results | default([]) }}"
+      when: item is defined and item.changed | default(false)
+    
+    # Include skipped objects in summary
+    - name: Include skipped objects in summary
+      set_fact:
+        skipped_address_count: "{{ address_value_duplicates | default([]) | length }}"
+        skipped_service_count: "{{ service_value_duplicates | default([]) | length }}"
+        skipped_address_group_count: "{{ address_group_value_duplicates | default([]) | length }}"
+        skipped_service_group_count: "{{ service_group_value_duplicates | default([]) | length }}"
+    
+    # Display value conflicts report before checking for name conflicts
+    - name: Display report of objects with identical values on Panorama
+      vars:
+        msg: |
+          Warning: The following objects have identical values to existing objects on Panorama (different names but same values):
+          {% if address_value_conflicts is defined and address_value_conflicts | length > 0 %}
+          Address Objects:
+          {% for conflict in address_value_conflicts %}
+            - CSV Name: {{ conflict.csv_name }}, Value: {{ conflict.value }}, Existing Object: {{ conflict.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if service_value_conflicts is defined and service_value_conflicts | length > 0 %}
+          Service Objects:
+          {% for conflict in service_value_conflicts %}
+            - CSV Name: {{ conflict.csv_name }}, Value: {{ conflict.value }}, Existing Object: {{ conflict.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if address_group_value_conflicts is defined and address_group_value_conflicts | length > 0 %}
+          Address Group Objects:
+          {% for conflict in address_group_value_conflicts %}
+            - CSV Name: {{ conflict.csv_name }}, Value: {{ conflict.value }}, Existing Object: {{ conflict.existing_name }}
+          {% endfor %}
+          {% endif %}
+          {% if service_group_value_conflicts is defined and service_group_value_conflicts | length > 0 %}
+          Service Group Objects:
+          {% for conflict in service_group_value_conflicts %}
+            - CSV Name: {{ conflict.csv_name }}, Value: {{ conflict.value }}, Existing Object: {{ conflict.existing_name }}
+          {% endfor %}
+          {% endif %}
+      debug:
+        msg: "{{ msg.split('\n') }}"
+      when: >
+        (address_value_conflicts is defined and address_value_conflicts | length > 0) or
+        (service_value_conflicts is defined and service_value_conflicts | length > 0) or
+        (address_group_value_conflicts is defined and address_group_value_conflicts | length > 0) or
+        (service_group_value_conflicts is defined and service_group_value_conflicts | length > 0)
+
+    - name: Display enhanced summary including skipped objects
+      debug:
+        msg: 
+          - "Created Address Objects: {{ created_address_objects | default([]) | join(', ') if created_address_objects | default([]) | length > 0 else 'None' }}"
+          - "Created Address Group Objects: {{ created_address_group_objects | default([]) | join(', ') if created_address_group_objects | default([]) | length > 0 else 'None' }}"
+          - "Created Service Objects: {{ created_service_objects | default([]) | join(', ') if created_service_objects | default([]) | length > 0 else 'None' }}"
+          - "Created Service Group Objects: {{ created_service_group_objects | default([]) | join(', ') if created_service_group_objects | default([]) | length > 0 else 'None' }}"
+          - "Skipped objects due to identical values - Address: {{ skipped_address_count }}, Service: {{ skipped_service_count }}, Address Group: {{ skipped_address_group_count }}, Service Group: {{ skipped_service_group_count }}"
+
+    ### Check if any changes were made
+    - name: Check if any changes were made
+      set_fact:
+        changes_made: "{{ 
+          (created_address_objects | default([]) | length > 0) or
+          (created_address_group_objects | default([]) | length > 0) or
+          (created_service_objects | default([]) | length > 0) or
+          (created_service_group_objects | default([]) | length > 0)
+        }}"

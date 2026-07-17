@@ -1,0 +1,10 @@
+{%- set result = [] -%}
+{%- for service in gather_new_svc -%}
+  {%- if service | trim != '' -%}
+    {%- for svc in  service | split(',') -%}
+      {%- set protocol, port = (svc | trim).split('/') -%}
+      {%- set _ = result.append(protocol + '/' + port) -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

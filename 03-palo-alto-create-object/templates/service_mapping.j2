@@ -1,0 +1,9 @@
+{% set result = [] %}
+{% for member in raw_members %}
+  {% if service_mapping is defined and service_mapping[member] is defined %}
+    {% set _ = result.append(service_mapping[member]) %}
+  {% else %}
+    {% set _ = result.append(member) %}
+  {% endif %}
+{% endfor %}
+{{ result }}

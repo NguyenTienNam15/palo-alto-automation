@@ -1,0 +1,122 @@
+---
+- name: Check PAN-OS schedule objects and related security rules
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+    warning_days: 7
+    smtp_port: 587
+    
+  pre_tasks:
+    - name: Verify required variables
+      ansible.builtin.assert:
+        that:
+          - panos_ip_address is defined
+          - panos_username is defined
+          - panos_password is defined
+          - smtp_host is defined
+          - smtp_port is defined
+          - smtp_username is defined
+          - smtp_password is defined
+          - mail_from is defined
+        fail_msg: "Missing required variables. Please define all required variables."
+      
+  tasks:
+    - name: Get current date and warning date
+      ansible.builtin.set_fact:
+        current_date: "{{ lookup('pipe', 'date +%Y/%m/%d') }}"
+        warning_date: "{{ lookup('pipe', 'date -d \"+{{ warning_days }} days\" +%Y/%m/%d') }}"
+
+    - name: Gather non-recurring schedule objects
+      paloaltonetworks.panos.panos_schedule_object:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: 'type == "non-recurring" and non_recurring_date_time is-not-none'
+      register: non_recurring_schedules
+
+    - name: Find expiring schedules
+      ansible.builtin.set_fact:
+        expiring_schedules: |
+          {% set result = [] %}
+          {% for schedule in non_recurring_schedules.gathered %}
+            {% for datetime in schedule.non_recurring_date_time %}
+              {% set end_date = datetime.split('-')[1].split('@')[0] %}
+              {% if end_date >= current_date and end_date <= warning_date %}
+                {% if schedule.name not in result %}
+                  {{ result.append(schedule.name) }}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {{ result }}
+
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    - name: Gather address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: shared_address_objects
+
+    - name: Gather service objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: service_objects
+
+    - name: Gather security rules
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        state: "gathered"
+        device_group: "{{ item.name }}"
+        gathered_filter: '*'
+        rulebase: post-rulebase
+      register: security_rules
+      loop: "{{ device_groups.gathered }}"
+      when: expiring_schedules|from_yaml|length > 0
+
+    - name: Find affected rules
+      ansible.builtin.set_fact:
+        affected_rules: >-
+          {% set result = [] %}
+          {% for item in security_rules.results %}
+            {% if item.gathered is defined and item.gathered|length > 0 %}
+              {% for rule in item.gathered %}
+                {% if rule.schedule is defined and rule.schedule in (expiring_schedules|from_yaml) %}
+                  {{ result.append(rule) }}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+          {{ result }}
+      when: security_rules is defined and security_rules.results is defined
+
+    - name: Get unique email list
+      ansible.builtin.set_fact:
+        unique_emails: "{{ affected_rules|from_yaml|map(attribute='description')|select('match', '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')|list|unique }}"
+      when: affected_rules is defined
+
+    - name: Send email notification
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        from: "{{ mail_from }}"
+        to: "{{ item }}"
+        subject: "PAN-OS Security Rules Expiration Warning"
+        body: "{{ lookup('template', 'templates/mail_expiring_rules.j2') }}"
+      delegate_to: localhost
+      loop: "{{ unique_emails }}"
+      when: affected_rules is defined

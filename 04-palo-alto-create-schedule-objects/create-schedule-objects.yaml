@@ -1,0 +1,99 @@
+- name: Create Secruity Rule
+  hosts: localhost 
+  gather_facts: false
+
+  vars:
+    device:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+
+    key_csv: "Column"
+     
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+
+  ### Read CSV File
+    - name: Find all CSV files in the specified directory
+      find:
+        paths: "./csv_file"
+        patterns: "*.csv"
+        recurse: yes
+      register: csv_files
+
+    - name: Remove lines with only commas using sed (in-place)
+      shell: sed -i '/^[,[:space:]]*$/d' "{{ csv_files.files[0].path }}"
+      args:
+        executable: /bin/bash
+
+    - name: Read CSV file
+      community.general.read_csv:
+        path: "{{ csv_files.files[0].path }}"
+        key: "Column"
+        delimiter: ';'
+      register: csv_data
+  
+    ### Check Duplicate Name
+  
+    - name: Get objects
+      paloaltonetworks.panos.panos_schedule_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: schedule_objects  
+  
+    - name: Extract existing names
+      set_fact:
+        existing_names: "{{ schedule_objects.gathered | map(attribute='name') | list }}"
+
+    - name: Find duplicate names
+      set_fact:
+        duplicate_names: "{{ csv_data.dict | dict2items | selectattr('value.Name', 'in', existing_names) | map(attribute='value.Name') | list }}"
+
+    - name: Fail if duplicates found
+      fail:
+        msg: "Address object with name '{{ item }}' already exists!"
+      when: duplicate_names | length > 0
+      loop: "{{ duplicate_names }}"
+  
+    ### Create Schedule Object
+    - name: Create Schedule Object
+      paloaltonetworks.panos.panos_schedule_object:
+        provider: '{{ device }}'
+        name: '{{ item.value.Name }}'
+        type: '{{ item.value.Type }}'
+        daily_time: '{{ item.value.DailyTime }}'
+        recurrence: '{{ item.value.Recurrence | default(omit, true) }}'
+        non_recurring_date_time: "{{ item.value.NonRecurringDateTime | default(omit, true) }}"
+        weekly_monday_time: "{{ item.value.WeeklyMondayTime | default(omit, true) }}"
+        weekly_tuesday_time: "{{ item.value.WeeklyTuesdayTime | default(omit, true) }}"
+        weekly_wednesday_time: "{{ item.value.WeeklyWednesdayTime | default(omit, true) }}"
+        weekly_thursday_time: "{{ item.value.WeeklyThursdayTime | default(omit, true) }}"
+        weekly_friday_time: "{{ item.value.WeeklyFridayTime | default(omit, true) }}"
+        weekly_saturday_time: "{{ item.value.WeeklySaturdayTime | default(omit, true) }}"
+        weekly_sunday_time: "{{ item.value.WeeklySundayTime | default(omit, true) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+  
+    ### Commit config on Panorama
+    - name: commit candidate configs on Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: '{{ device }}'
+      register: commitresults
+
+    ### Get device Groups
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    ### Push config to device groups
+    - name: Push device group configs
+      paloaltonetworks.panos.panos_commit_push:
+        provider: '{{ device }}'
+        style: 'device group'
+        name: '{{ item.name }}'
+      loop: "{{ device_group.gathered }}"

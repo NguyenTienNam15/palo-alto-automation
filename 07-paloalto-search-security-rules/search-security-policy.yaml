@@ -1,0 +1,118 @@
+- name: Search Policy
+  hosts: localhost 
+  gather_facts: false
+
+  vars:
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+    # Khởi tạo biến mặc định
+    - name: Initialize default variables
+      set_fact:
+        search_addresses: []
+        search_services: []
+        matched_address_names: []
+        matched_service_names: []
+
+    # Xử lý input address nếu có
+    - name: Process input addresses
+      set_fact:
+        search_addresses: "{{ input_address.split('\n') }}"
+      when: 
+        - input_address is defined 
+        - input_address | string | length > 0
+
+    # Xử lý input service nếu có
+    - name: Process input services
+      set_fact:
+        search_services: "{{ input_service.split('\n') }}"
+      when: 
+        - input_service is defined
+        - input_service | string | length > 0
+
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    # Tìm address objects nếu có input address
+    - name: Get matching address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "value == '{{ item }}'"
+      register: matched_addresses
+      loop: "{{ search_addresses }}"
+      when: search_addresses | length > 0
+
+    # Tìm service objects nếu có input service  
+    - name: Get matching service objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ provider }}"
+        state: "gathered"
+        gathered_filter: "protocol == '{{ item.split('/')[0] }}' and destination_port == '{{ item.split('/')[1] }}'"
+      register: matched_services
+      loop: "{{ search_services }}"
+      when: search_services | length > 0
+
+    # Cập nhật matched address names nếu có kết quả
+    - name: Update matched address names
+      set_fact:
+        matched_address_names: "{{ matched_addresses.results | default([]) | map(attribute='gathered') | flatten | map(attribute='name') | list }}"
+      when: matched_addresses is defined and matched_addresses.results is defined
+
+    # Cập nhật matched service names nếu có kết quả
+    - name: Update matched service names
+      set_fact:
+        matched_service_names: "{{ matched_services.results | default([]) | map(attribute='gathered') | flatten | map(attribute='name') | list }}"
+      when: matched_services is defined and matched_services.results is defined
+
+    # Tạo điều kiện tìm kiếm động dựa trên input có sẵn
+    - name: Prepare search filter
+      set_fact:
+        search_filter: "{{ [] }}"
+
+    - name: Add address filter if addresses exist
+      set_fact:
+        search_filter: "{{ search_filter + ['source_ip contains ''' + matched_address_names | join(''' or source_ip contains ''') + ''' or destination_ip contains ''' + matched_address_names | join(''' or destination_ip contains ''') + ''''] }}"
+      when: matched_address_names | length > 0
+
+    - name: Add service filter if services exist
+      set_fact:
+        search_filter: "{{ search_filter + ['service contains ''' + matched_service_names | join(''' or service contains ''') + ''''] }}"
+      when: matched_service_names | length > 0
+
+    # Tìm security rules
+    - name: Find security rules using matched objects
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        state: "gathered"
+        device_group: "{{ item.name }}"
+        gathered_filter: "{{ search_filter | join(' or ') }}"
+        rulebase: post-rulebase
+      register: matched_rules
+      loop: "{{ device_groups.gathered }}"
+      when: search_filter | length > 0
+
+    # Gửi email report
+    - name: Send email report
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to_report }}"
+        subject: "[Report] PAN-OS Security Rules Analysis"
+        body: "{{ lookup('template', 'templates/security_rules_report.j2') }}"
+        subtype: html
+      delegate_to: localhost
+      when: matched_rules.results | default([]) | selectattr('gathered', 'defined') | list | length > 0

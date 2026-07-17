@@ -1,0 +1,6 @@
+﻿Column,DeviceGroup,Name,Location,RuleReference,SourceAddress,User,DestinationAddress,Application,Service,Action,Schedule,Comment
+1,HN_PA,demo-07-03-1,top,,10.5.6.7,any,10.1.105.123,,tcp/23,allow,,Rule 33
+2,HN_PA,demo-07-03-2,top,,10.5.6.8,any,10.1.105.123/8,,tcp/23,allow,,Rule 34
+3,HN_PA,demo-07-03-3,berfore,ceminar-20-02-1,10.5.6.9,any,10.1.102.5,,,allow,,Rule 35
+4,HCM_PA_01,demo-07-03-4,top,,10.5.6.10,any,12.12.12.15-12.12.12.30,,tcp/25,allow,,Rule 36
+5,HCM_PA_01,demo-07-03-5,after,ceminar-20-02-3,10.5.6.11,any,facebook.com,ssh,,allow,,Rule 37

@@ -1,0 +1,108 @@
+---
+- name: Get All Devices Resource Metrics
+  hosts: localhost
+  gather_facts: no
+  collections:
+    - paloaltonetworks.panos
+  vars:
+    smtp_port: 587
+    provider:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+  tasks:
+    - name: Get all devices
+      panos_op:
+        provider: "{{ provider }}"
+        cmd: "show devices all"
+      register: devices_output
+
+    - name: Parse devices information
+      set_fact:
+        device_providers: "{{ devices_output.stdout | from_json | json_query('response.result.devices.entry[*].{hostname: hostname, ip: \"ip-address\", serial: serial, connected: connected}') }}"
+
+    - name: Filter connected devices
+      set_fact:
+        connected_devices: "{{ device_providers | selectattr('connected', 'eq', 'yes') | list }}"
+
+    - name: Get system resources for each device
+      panos_op:
+        provider:
+          ip_address: "{{ panos_ip_address }}"
+          username: "{{ panos_username }}"
+          password: "{{ panos_password }}"
+          serial_number: "{{ item.serial }}"
+        cmd: '<show><system><resources/></system></show>'
+        cmd_is_xml: true
+      register: device_resources
+      loop: "{{ connected_devices }}"
+      ignore_errors: yes
+
+    - name: Get HA state for each device
+      panos_op:
+        provider:
+          ip_address: "{{ panos_ip_address }}"
+          username: "{{ panos_username }}"
+          password: "{{ panos_password }}"
+          serial_number: "{{ item.serial }}"
+        cmd: '<show><high-availability><state/></high-availability></show>'
+        cmd_is_xml: true
+      register: device_ha
+      loop: "{{ connected_devices }}"
+      ignore_errors: yes
+
+    - name: Get disk space for each device
+      panos_op:
+        provider:
+          ip_address: "{{ panos_ip_address }}"
+          username: "{{ panos_username }}"
+          password: "{{ panos_password }}"
+          serial_number: "{{ item.serial }}"
+        cmd: '<show><system><disk-space/></system></show>'
+        cmd_is_xml: true
+      register: device_disk_space
+      loop: "{{ connected_devices }}"
+      ignore_errors: yes
+
+    - name: Initialize device_metrics list
+      set_fact:
+        device_metrics: []
+
+    - name: Process metrics for each device
+      set_fact:
+        device_metrics: "{{ device_metrics + [{
+          'hostname': item.0.hostname,
+          'ip': item.0.ip,
+          'cpu_idle': (item.1.stdout | from_json).response.result | regex_search('%Cpu\\(s\\):\\s+[0-9.]+\\s+us,\\s+[0-9.]+\\s+sy,\\s+[0-9.]+\\s+ni,\\s+([0-9.]+)\\s+id', '\\1') | first,
+          'memory_total': (item.1.stdout | from_json).response.result | regex_search('MiB Mem :\\s+([0-9.]+)\\s+total', '\\1') | first,
+          'memory_used': (item.1.stdout | from_json).response.result | regex_search('MiB Mem :\\s+[0-9.]+\\s+total,\\s+[0-9.]+\\s+free,\\s+([0-9.]+)\\s+used', '\\1') | first,
+          'ha_state': ((item.2.stdout | from_json).response.result.enabled == 'yes') | ternary((item.2.stdout | from_json).response.result.group['local-info'].state | default('unknown'), 'HA not enabled'),
+          'disk_space': item.3.stdout
+          }] }}"
+      loop: "{{ connected_devices | zip(device_resources.results, device_ha.results, device_disk_space.results) | list }}"
+
+    - name: Display metrics for all devices
+      debug:
+        msg:
+          - "=== Device {{ item.hostname }} ({{ item.ip }}) ==="
+          - "CPU Usage: {{ (100 - (item.cpu_idle | float)) | round(1) }}%"
+          - "Memory Usage: {{ ((item.memory_used | float) / (item.memory_total | float) * 100) | round(1) }}%"
+          - "HA State: {{ item.ha_state }}"
+          - "Disk Space:"
+          - "{{ (item.disk_space | from_json).response.result }}"
+          - "{% if ((100 - (item.cpu_idle | float)) > 80) or ((item.memory_used | float) / (item.memory_total | float) * 100 > 80) %}\nCritical: CPU or Memory usage is above 80%\n{% endif %}"
+          - "{% if item.ha_state != 'HA not enabled' and item.ha_state not in ['active', 'passive'] %}\nCritical: HA State is not Active or Passive\n{% endif %}"
+      loop: "{{ device_metrics }}"
+
+    - name: Send metrics report via email
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: "Metrics Report"
+        body: "{{ lookup('template', 'metrics_report.html.j2') }}"
+        subtype: html
+      delegate_to: localhost
