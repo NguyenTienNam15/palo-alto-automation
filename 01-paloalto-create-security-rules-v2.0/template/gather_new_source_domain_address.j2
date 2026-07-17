@@ -1,0 +1,9 @@
+{%- set result = [] -%}
+{%- for domain in new_source_address_domain -%}
+  {%- if domain | trim != '' -%}
+    {%- for dms in  domain | split(',') -%}
+      {%- set _ = result.append(dms) -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

@@ -1,0 +1,5 @@
+{%- set result = [] -%}
+{%- for add in gather_address_ip_netmask.gathered -%}
+  {%- set _ = result.append(add.value) -%}
+{%- endfor -%}
+{{ result }}

@@ -1,0 +1,2 @@
+Column,DeviceGroup,Name,Location,RuleReference,SourceAddress,User,DestinationAddress,Application,Service,Action,Schedule,Comment
+1,PA_SSC,HoangHaidtr111,top,,10.1.2.3,,192.169.122.123,"ssl,google-drive-web",,allow,30-09-2025,tao moi

@@ -1,0 +1,73 @@
+{# Trường hợp 2: Trùng 4/5 trường trong đó có schedule - Merge rule #}
+{%- set result = [] -%}
+{%- for map_rule in mapped_rules -%}
+  {# Bỏ qua rule đã được xử lý #}
+  {%- if map_rule.column not in processed_rule_columns | default([]) -%}
+    {%- set best_match = {'rule': None, 'core_match_count': 0, 'has_schedule_match': false, 'found': false} -%}
+    
+    {%- for rc in sec_rules.results -%}
+      {%- if rc.item == map_rule.device_group -%}
+        {%- for sec_rule in rc.gathered -%}
+          {# Chỉ so sánh các rule có cùng action #}
+          {%- if sec_rule.action is defined and map_rule.action is defined and sec_rule.action == map_rule.action -%}
+            {# Thiết lập biến đếm số trường core match #}
+            {%- set core_match_count = 0 -%}
+            {%- set schedule_match = false -%}
+            
+            {# Kiểm tra source_ip khớp #}
+            {%- if sec_rule.source_ip is defined and map_rule.source_ip is defined and sec_rule.source_ip|sort == map_rule.source_ip|sort -%}
+              {%- set core_match_count = core_match_count + 1 -%}
+            {%- endif -%}
+            
+            {# Kiểm tra destination_ip khớp #}
+            {%- if sec_rule.destination_ip is defined and map_rule.destination_ip is defined and sec_rule.destination_ip|sort == map_rule.destination_ip|sort -%}
+              {%- set core_match_count = core_match_count + 1 -%}
+            {%- endif -%}
+          
+            {# Kiểm tra application khớp #}
+            {%- if sec_rule.application is defined and map_rule.application is defined and sec_rule.application|sort == map_rule.application|sort -%}
+              {%- set core_match_count = core_match_count + 1 -%}
+            {%- endif -%}
+          
+            {# Kiểm tra service khớp #}
+            {%- if sec_rule.service is defined and map_rule.service is defined and sec_rule.service|sort == map_rule.service|sort -%}
+              {%- set core_match_count = core_match_count + 1 -%}
+            {%- endif -%}
+
+            {# Kiểm tra schedule khớp - xử lý nhất quán các kiểu dữ liệu #}
+            {%- if (not sec_rule.schedule or sec_rule.schedule|string in ['None', '']) and 
+                   (not map_rule.schedule or map_rule.schedule|string in ['None', '']) -%}
+              {%- set schedule_match = true -%}
+            {%- elif sec_rule.schedule and map_rule.schedule and 
+                    sec_rule.schedule|string not in ['None', ''] and 
+                    map_rule.schedule|string not in ['None', ''] and 
+                    sec_rule.schedule|string == map_rule.schedule|string -%}
+              {%- set schedule_match = true -%}
+            {%- endif -%}
+
+            {# Lưu lại match tốt nhất cho rule này - trùng ít nhất 3/4 trường core và schedule match #}
+            {%- if core_match_count >= 3 and schedule_match and (not best_match.found or best_match.core_match_count < core_match_count) -%}
+              {%- set _ = best_match.update({'rule': sec_rule, 'core_match_count': core_match_count, 'has_schedule_match': schedule_match, 'found': true}) -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+    {%- endfor -%}
+
+    {# Nếu tìm thấy match với ít nhất 3/4 trường core và cùng schedule #}
+    {%- if best_match.found and best_match.core_match_count >= 3 and best_match.has_schedule_match -%}
+      {%- set policy_dict = {
+            'column': map_rule.column,
+            'rule_name': best_match.rule.rule_name,
+            'device_group': map_rule.device_group,
+            'source_ip': map_rule.source_ip,
+            'destination_ip': map_rule.destination_ip,
+            'application': map_rule.application,
+            'service': map_rule.service,
+            'schedule': map_rule.schedule
+        } -%}
+      {%- set _ = result.append(policy_dict) -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

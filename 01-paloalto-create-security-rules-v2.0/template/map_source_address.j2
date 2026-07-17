@@ -1,0 +1,40 @@
+{# templates/map_source_address.j2 #}
+{%- set result = [] -%}
+{%- set souraddrs = item.value.SourceAddress | split(',') -%}
+{%- for souradd in souraddrs -%}
+  {%- if souradd | trim != '' -%}
+    {%- set value = (souradd | trim) -%}
+    {%- set domain_matched = [false] -%}
+    {%- set ip_netmask_matched = [false] -%}
+    {%- set ip_range_matched = [false] -%}    
+    {%- for curadd in address_objects.gathered -%}
+      {%- if curadd.address_type == 'fqdn' and curadd.value == value and not domain_matched[0] -%}
+        {%- set _ = result.append(curadd.name) -%}
+        {%- set _ = domain_matched.__setitem__(0, true) -%}
+      {%- endif -%}
+      {%- if curadd.address_type == 'ip-netmask' and curadd.value == value and not ip_netmask_matched[0] -%}
+        {%- set _ = result.append(curadd.name) -%}
+        {%- set _ = ip_netmask_matched.__setitem__(0, true) -%}
+      {%- endif -%}
+      {%- if curadd.address_type == 'ip-range' and curadd.value == value and not ip_range_matched[0] -%}
+        {%- set _ = result.append(curadd.name) -%}
+        {%- set _ = ip_range_matched.__setitem__(0, true) -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if not domain_matched[0] and ip_netmask_matched[0] and ip_range_matched[0] -%}
+      {%- set _ = result.append('FQDN_' + value) -%}
+    {%- endif -%}
+    {%- if not ip_netmask_matched[0] and ip_range_matched[0] and domain_matched[0] -%}
+      {%- set _ = result.append('IP_Netmask_' + value | replace("/","-")) -%}
+    {%- endif -%}
+    {%- if not ip_range_matched[0] and domain_matched[0] and ip_netmask_matched[0] -%}
+      {%- set _ = result.append('IP_Range_' + value) -%}
+    {%- endif -%}    
+    {%- if not ip_range_matched[0] and not domain_matched[0] and not ip_netmask_matched[0] -%}
+      {%- set _ = result.append(value) -%}
+    {%- endif -%}  
+  {%- else -%}
+    {%- set _ = result.append('any') -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

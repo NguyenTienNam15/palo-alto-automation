@@ -1,0 +1,11 @@
+{%- set result = [] -%}
+{%- for applications in item.value.Application | split(',') -%}
+  {%- if applications | trim != '' -%}
+    {%- for app in  applications | split(',') -%}
+      {%- set _ = result.append(app) -%}
+    {%- endfor -%}
+  {%- else -%}
+    {%- set _ = result.append('any') -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

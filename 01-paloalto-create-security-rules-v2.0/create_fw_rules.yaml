@@ -1,0 +1,622 @@
+- name: Create Security Rule
+  hosts: localhost 
+  gather_facts: false
+
+  vars:
+    device:
+      ip_address: "{{ panos_ip_address }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+
+    key_csv: "Column"
+    
+    device_dict: {}
+    intersections: {}
+ 
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+
+  ### Read CSV File
+    - name: Find all CSV files in the specified directory
+      find:
+        paths: "./csv_file"
+        patterns: "*.csv"
+        recurse: yes
+      register: csv_files
+
+    - name: Remove lines with only commas using sed (in-place)
+      shell: sed -i '/^[,[:space:]]*$/d' "{{ csv_files.files[0].path }}"
+      args:
+        executable: /bin/bash
+
+    - name: Read CSV file    
+      community.general.read_csv:
+        path: "{{ csv_files.files[0].path }}"
+        key: "Column"
+      register: csv_data
+
+  ### Check duplicate rule name
+  
+    - name: Gather applying device group
+      ansible.builtin.set_fact:
+        applying_device_group: "{{ applying_device_group | default([]) + [item.value.DeviceGroup] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      no_log: true
+
+    - name: Make unique device group
+      set_fact:
+        device_group: "{{ applying_device_group | list | unique }}"
+    
+    - name: Gather security policy object
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ device }}"
+        state: 'gathered'
+        device_group: "{{ item }}"
+        rulebase: 'post-rulebase'
+        gathered_filter: "*"       
+      register: sec_rules
+      loop: "{{ device_group }}"
+
+    - name: Create dictionary of device groups and security policy names
+      set_fact:
+        security_policy_dict: "{{ security_policy_dict | default({}) | combine({item.item: item.gathered | map(attribute='rule_name') }) }}"
+      loop: "{{ sec_rules.results }}"
+      no_log: true
+
+    - name: Create dictionary with Device as key and list of Names as values
+      set_fact:
+        device_policy_dict: "{{ device_policy_dict | default({}) | combine({item.value.DeviceGroup: (device_policy_dict[item.value.DeviceGroup] | default([])) + [item.value.Name]}) }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+      no_log: true
+
+    - name: Check for duplicate values within each key
+      set_fact:
+        duplicate_policies: >-
+          {%- set dupes = {} -%}
+          {%- for key, policies in device_policy_dict.items() -%}
+            {%- set seen = [] -%}
+            {%- set duplicates = [] -%}
+            {%- for policy in policies -%}
+              {%- if policy in seen and policy not in duplicates -%}
+                {%- set _ = duplicates.append(policy) -%}
+              {%- else -%}
+                {%- set _ = seen.append(policy) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if duplicates -%}
+              {%- set _ = dupes.update({key: duplicates}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ dupes }}
+
+    - name: Fail if duplicates exist
+      fail:
+        msg: "Duplicate applying security rule name {{ item.value }} found on {{ item.key }} Device Group. Please check again!"
+      when: item.value | length > 0
+      loop: "{{ duplicate_policies | dict2items }}"
+
+    - name: Find intersections in device_policy_dict and security_policy_dict
+      set_fact:
+        intersections: "{{ intersections | default({}) | combine({ item: device_policy_dict[item] | intersect(security_policy_dict[item]) }) }}"
+      loop: "{{ device_policy_dict.keys() | intersect(security_policy_dict.keys()) }}"
+    
+    - name: Compare keys and find intersections
+      set_fact:
+        intersection: "{{ intersections | combine({ item: (device_policy_dict[item] | intersect(security_policy_dict[item])) }) }}"
+      loop: "{{ device_policy_dict.keys() | intersect(security_policy_dict.keys()) }}"
+
+    - name: Fail if all keys in intersections have non-empty values
+      fail:
+        msg: "Security policy rule '{{ value }}' on '{{ key }}' is already existing. please check again!!!"
+      loop: "{{ intersections.keys() }}"
+      when: intersections[item] | length > 0
+      vars:
+        key: "{{ item }}"
+        value: "{{ intersections[item] | join(', ') }}"
+
+  ### Gather AddressSource Field
+    - name: Gather new source address object
+      ansible.builtin.set_fact:
+        new_source_address_domain: "{{ new_source_address_domain | default([]) + [item.value.SourceAddress] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    - name: Make source address list
+      set_fact:
+        new_source_domains: "{{ lookup('template', 'template/gather_new_source_domain_address.j2') }}"
+
+  ### Gather AddressDestinate Field
+    - name: Gather new destination address object
+      ansible.builtin.set_fact:
+        new_destination_address: "{{ new_destination_address | default([]) + [item.value.DestinationAddress] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    - name: Make destination address list
+      set_fact:
+        new_destination_domains: "{{ lookup('template', 'template/gather_new_destination_domain_address.j2') }}"
+
+  ### Collect new domains
+    - name: Collect new address value
+      set_fact:
+        new_address_value: "{{ new_source_domains + new_destination_domains }}"
+
+    - name: Filter new domains
+      set_fact:
+        applying_domains: >-
+          {{ 
+            new_address_value | select('match', '^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$') | list | unique
+          }}
+
+  ### Collect new IP Netmask
+    - name: Filter new IP CIDR
+      set_fact:
+        applying_ip_cidr: >-
+          {{ 
+            new_address_value | select('match', '\b(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[1-2][0-9]|3[0-2])\b') | list | unique
+          }}
+
+    - name: Filter new IP Pattern
+      set_fact:
+        applying_ip_pattern: >-
+          {{ 
+            new_address_value | select('match', '\b(?:\d{1,3}\.){3}\d{1,3}\b(?![-/])') | list | unique
+          }}
+
+  ### Collect new IP Range
+    - name: Filter new IP Range
+      set_fact:
+        applying_ip_range: >-
+          {{ 
+            new_address_value | select('match', '\b(?:\d{1,3}\.){3}\d{1,3}-(?:\d{1,3}\.){3}\d{1,3}\b') | list | unique
+          }}
+
+    - name: Get domain address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "address_type == fqdn"
+      register: gather_address_domain
+    
+    - name: Gather existing domain address
+      ansible.builtin.set_fact:
+        current_address_domain: "{{ lookup('template', 'template/gather_exist_address_domains.j2') }}"
+
+    - name: Get ip-netmask address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "address_type == ip-netmask"
+      register: gather_address_ip_netmask
+
+    - name: Gather existing IP Netmask address
+      ansible.builtin.set_fact:
+        current_address_ip_netmask: "{{ lookup('template', 'template/gather_exist_address_ip_netmask.j2') }}"
+
+    - name: Get ip-range address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "address_type == ip-range"
+      register: gather_address_ip_range
+    
+    - name: Gather existing IP Range address
+      ansible.builtin.set_fact:
+        current_address_ip_range: "{{ lookup('template', 'template/gather_exist_address_ip_range.j2') }}"
+
+  ### Find new domain to create
+    - name: Find new domain
+      ansible.builtin.set_fact:
+        unique_domain: "{{ applying_domains | difference(current_address_domain) }}"
+      when: 
+        - applying_domains is defined
+        - current_address_domain is defined
+
+  ### Find new IP Host to create
+    - name: Find new IP Netmask
+      ansible.builtin.set_fact:
+        unique_ip_cidr: "{{ applying_ip_cidr | difference(current_address_ip_netmask) }}"
+      when: 
+        - applying_ip_cidr is defined
+        - current_address_ip_netmask is defined
+
+  ### Find new IP Subnet to create
+    - name: Find new IP Netmask
+      ansible.builtin.set_fact:
+        unique_ip_pattern: "{{ applying_ip_pattern | difference(current_address_ip_netmask) }}"
+      when: 
+        - applying_ip_pattern is defined
+        - current_address_ip_netmask is defined
+
+  ### Find new IP Range to create
+    - name: Find new IP Range
+      ansible.builtin.set_fact:
+        unique_ip_range: "{{ applying_ip_range | difference(current_address_ip_range) }}"
+      when: 
+        - applying_ip_range is defined
+        - current_address_ip_range is defined
+
+  ### Create new domain if exist
+    - name: Create new address domain object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'FQDN_{{ item }}'
+        address_type: 'fqdn'
+        value: '{{ item }}'
+      loop: '{{ unique_domain }}'
+      when: 
+        - "{{ applying_domains | length > 0  }}"
+        - unique_domain is defined
+
+  ### Create IP Host if does not exist
+    - name: Create new address IP Subnet object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Subnet_{{ item | replace("/","-") }}'
+        address_type: 'ip-netmask'
+        value: '{{ item }}'
+      loop: '{{ unique_ip_cidr }}'
+      when: 
+        - "{{ unique_ip_cidr | length > 0  }}"
+        - unique_ip_cidr is defined
+
+  ### Create IP Subnet if does not exist
+    - name: Create new address IP Host object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Host_{{ item | replace("/","-") }}'
+        address_type: 'ip-netmask'
+        value: '{{ item }}'
+      loop: '{{ unique_ip_pattern }}'
+      when: 
+        - "{{ unique_ip_pattern | length > 0  }}"
+        - unique_ip_pattern is defined
+
+  ### Create IP Range if does not exist
+    - name: Create new address IP Range object
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Range_{{ item }}'
+        address_type: 'ip-range'
+        value: '{{ item }}'
+      loop: '{{ unique_ip_range }}'
+      when: 
+        - "{{ applying_ip_range | length > 0  }}"
+        - unique_ip_range is defined
+
+  ### Create new domain if address object empty
+    - name: Create new address domain object if address object empty
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'FQDN_{{ item }}'
+        address_type: 'fqdn'
+        value: '{{ item }}'
+      loop: '{{ applying_domains }}'
+      when: 
+        - "{{ applying_domains | length > 0  }}"
+        - unique_domain is undefined
+
+  ### Create IP Subnet if address object empty
+    - name: Create new address IP Subnet object if address object empty
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Subnet_{{ item | replace("/","-") }}'
+        address_type: 'ip-netmask'
+        value: '{{ item }}'
+      loop: '{{ applying_ip_cidr }}'
+      when: 
+        - "{{ applying_ip_cidr | length > 0  }}"
+        - unique_ip_cidr is undefined
+
+  ### Create IP Host if address object empty
+    - name: Create new address IP Host object if address object empty
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Host_{{ item | replace("/","-") }}'
+        address_type: 'ip-netmask'
+        value: '{{ item }}'
+      loop: '{{ applying_ip_pattern }}'
+      when: 
+        - "{{ applying_ip_pattern | length > 0  }}"
+        - unique_ip_pattern is undefined
+
+  ### Create IP Range if address object empty
+    - name: Create new address IP Range object if address object empty
+      paloaltonetworks.panos.panos_address_object:
+        provider: '{{ device }}'
+        name: 'IP_Range_{{ item }}'
+        address_type: 'ip-range'
+        value: '{{ item }}'
+      loop: '{{ applying_ip_range }}'
+      when: 
+        - "{{ applying_ip_range | length > 0  }}"
+        - unique_ip_range is undefined
+
+  ### Get Service Object
+
+    - name: Get service objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: service_objects
+
+  ### Create Service Object not Exsits
+
+    - name: Gather new service object
+      ansible.builtin.set_fact:
+        gather_new_svc_from_csv: "{{ gather_new_svc_from_csv | default([]) + [item.value.Service] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    - name: Create applying service list
+      ansible.builtin.set_fact:
+        applying_service: "{{ lookup('template', 'template/create_service_list.j2') }}"
+
+    - name: Create applying service object
+      ansible.builtin.set_fact:
+        gather_new_svc: >-
+          {{ 
+            applying_service | select('match', '^(tcp|udp)/\d+(-\d+)?$') | list | unique 
+          }}  
+      
+    - name: Create service object list
+      ansible.builtin.set_fact:
+        new_applying_svc: "{{ lookup('template', 'template/gather_new_svc.j2') }}"
+
+    - name: Find existing service values
+      ansible.builtin.set_fact:
+        existing_svc_obj: "{{ lookup('template', 'template/gather_current_service_detect.j2') }}"
+
+    - name: Create service object from protocol and port
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ device }}"
+        name: "service-{{ item.1.split('/')[0] }}-{{ item.1.split('/')[1] }}"
+        protocol: "{{ item.1.split('/')[0] }}"
+        destination_port: "{{ item.1.split('/')[1] }}"
+      with_indexed_items: "{{ new_applying_svc | difference(existing_svc_obj) }}"
+      when: 
+        - existing_svc_obj is defined
+
+  ### Get Address and Service Object
+    - name: Get address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: address_objects
+
+    - name: Get service objects
+      paloaltonetworks.panos.panos_service_object:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: service_objects
+
+  ### Create Security Object Dictionary
+    - name: Map services and domain
+      set_fact:
+        mapped_rules: "{{ mapped_rules | default([]) + [{
+          'column': item.value.Column,
+          'rule_name': item.value.Name,
+          'description': item.value.Comment,
+          'location': item.value.Location | default('top', true),
+          'existing_rule': item.value.RuleReference,
+          'source_ip': lookup('template', 'template/map_source_address.j2') | default('any', true),
+          'source_user': item.value.User | default('any', true),
+          'destination_ip': lookup('template', 'template/map_destination_address.j2') | default('any', true),
+          'device_group': item.value.DeviceGroup,
+          'application': lookup('template', 'template/create_application_list.j2'),
+          'service': lookup('template', 'template/map_service.j2'),
+          'action': item.value.Action | default('allow', true),
+          'schedule': item.value.Schedule | default('None', true),
+        }] }}"
+      loop: "{{ csv_data.dict | dict2items }}"
+
+    ### Tách xử lý các trường hợp riêng biệt
+    - name: Initialize processed rules list
+      set_fact:
+        processed_rule_columns: []
+
+    ### Trường hợp 2: Trùng 4/4 trường cơ bản và cùng schedule
+    - name: Find rules for Case 2 (4/4 core fields match with same schedule)
+      set_fact:
+        case2_rules: "{{ lookup('template', 'template/case2_rules.j2') | from_yaml }}"
+
+    - name: Update processed rule columns for Case 2
+      set_fact:
+        processed_rule_columns: "{{ processed_rule_columns + [item.column] }}"
+      loop: "{{ case2_rules | default([]) }}"
+      when: case2_rules is defined and case2_rules | length > 0
+
+    - name: Update security rules for Case 2 (merge)
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ device }}"
+        state: "merged"
+        rule_name: "{{ item.rule_name }}"
+        device_group: "{{ item.device_group }}"
+        source_ip: "{{ item.source_ip }}"
+        rulebase: post-rulebase
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        schedule: "{{ item.schedule if item.schedule != 'None' else omit }}"
+      loop: "{{ case2_rules | default([]) }}"
+      when: case2_rules is defined and case2_rules | length > 0
+
+    - name: Prepare case2 messages
+      set_fact:
+        case2_messages: "{{ case2_messages | default([]) + ['Rule ' + item.rule_name + ' on Device Group ' + item.device_group + ' is updated by merging (Case 2: 4/4 core match with same schedule).'] }}"
+      loop: "{{ case2_rules | default([]) }}"
+      when: case2_rules is defined and case2_rules | length > 0
+
+    ### Trường hợp 3: Trùng 4/4 trường cơ bản nhưng khác schedule
+    - name: Find rules for Case 3 (4/4 core fields match but different schedule)
+      set_fact:
+        case3_rules: "{{ lookup('template', 'template/case3_rules.j2') | from_yaml }}"
+
+    - name: Update processed rule columns for Case 3
+      set_fact:
+        processed_rule_columns: "{{ processed_rule_columns + [item.column] }}"
+      loop: "{{ case3_rules | default([]) }}"
+      when: case3_rules is defined and case3_rules | length > 0
+
+    - name: Create new security rules for Case 3
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ device }}"
+        state: "present"
+        description: "{{ item.description | default('Created from CSV - Case 3: 4/4 core match but different schedule') }}"
+        rule_name: "{{ item.rule_name }}"
+        location: "{{ item.location }}"
+        existing_rule: '{{ item.existing_rule | default(omit, true) }}'
+        rule_type: "universal"
+        device_group: "{{ item.device_group }}"
+        rulebase: post-rulebase
+        source_zone: 'any' 
+        source_ip: "{{ item.source_ip }}" 
+        source_user: "{{ item.source_user }}"
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        action: "{{ item.action }}"
+        schedule: "{{ item.schedule if item.schedule != 'None' else omit }}"
+      loop: "{{ case3_rules | default([]) }}"
+      when: case3_rules is defined and case3_rules | length > 0
+
+    - name: Prepare case3 messages
+      set_fact:
+        case3_messages: "{{ case3_messages | default([]) + ['Rule ' + item.rule_name + ' on Device Group ' + item.device_group + ' is created (Case 3: 4/4 core match but different schedule).'] }}"
+      loop: "{{ case3_rules | default([]) }}"
+      when: case3_rules is defined and case3_rules | length > 0
+
+    ### Trường hợp 1: Trùng 3/4 trường cơ bản và khác schedule
+    - name: Find rules for Case 1 (3/4 core fields match)
+      set_fact:
+        case1_rules: "{{ lookup('template', 'template/case1_rules.j2') | from_yaml }}"
+
+    - name: Update processed rule columns for Case 1
+      set_fact:
+        processed_rule_columns: "{{ processed_rule_columns + [item.column] }}"
+      loop: "{{ case1_rules | default([]) }}"
+      when: case1_rules is defined and case1_rules | length > 0
+
+    - name: Create new security rules for Case 1
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ device }}"
+        state: "present"
+        description: "{{ item.description | default('Created from CSV - Case 1: 3/4 core match') }}"
+        rule_name: "{{ item.rule_name }}"
+        location: "{{ item.location }}"
+        existing_rule: '{{ item.existing_rule | default(omit, true) }}'
+        rule_type: "universal"
+        device_group: "{{ item.device_group }}"
+        rulebase: post-rulebase
+        source_zone: 'any' 
+        source_ip: "{{ item.source_ip }}" 
+        source_user: "{{ item.source_user }}"
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        action: "{{ item.action }}"
+        schedule: "{{ item.schedule if item.schedule != 'None' else omit }}"
+      loop: "{{ case1_rules | default([]) }}"
+      when: case1_rules is defined and case1_rules | length > 0
+
+    - name: Prepare case1 messages
+      set_fact:
+        case1_messages: "{{ case1_messages | default([]) + ['Rule ' + item.rule_name + ' on Device Group ' + item.device_group + ' is created (Case 1: 3/4 core match).'] }}"
+      loop: "{{ case1_rules | default([]) }}"
+      when: case1_rules is defined and case1_rules | length > 0
+
+    ### Trường hợp còn lại: Tạo mới không match gì cả
+    - name: Get remaining unprocessed rules
+      set_fact:
+        remaining_rules: "{{ mapped_rules | rejectattr('column', 'in', processed_rule_columns) | list }}"
+
+    - name: Create security rules for remaining unprocessed rules
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ device }}"
+        state: "present"
+        description: "{{ item.description }}"
+        rule_name: "{{ item.rule_name }}"
+        location: '{{ item.location }}'
+        existing_rule: '{{ item.existing_rule | default(omit, true) }}'
+        rule_type: "universal"
+        device_group: "{{ item.device_group }}"
+        rulebase: post-rulebase
+        source_zone: 'any' 
+        source_ip: "{{ item.source_ip }}" 
+        source_user: "{{ item.source_user }}"
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        action: "{{ item.action }}"
+        schedule: "{{ item.schedule if item.schedule != 'None' else omit }}"
+      loop: "{{ remaining_rules }}"
+      when: remaining_rules is defined and remaining_rules | length > 0
+
+    - name: Prepare remaining rules messages
+      set_fact:
+        remaining_messages: "{{ remaining_messages | default([]) + ['Rule ' + item.rule_name + ' on Device Group ' + item.device_group + ' is created (no matching criteria).'] }}"
+      loop: "{{ remaining_rules | default([]) }}"
+      when: remaining_rules is defined and remaining_rules | length > 0
+
+    ## Prepare report 
+    - name: Prepare case2 messages (merge)
+      set_fact:
+        case2_messages: "{{ case2_messages | default([]) + ['Rule \"' + item.rule_name + '\" on DG \"' + item.device_group + '\" updated (merge) from CSV column ' + item.column] }}"
+      loop: "{{ case2_rules | default([]) }}"
+      when: case2_rules is defined and case2_rules | length > 0
+
+    - name: Prepare case3 messages (new rule with different schedule)
+      set_fact:
+        case3_messages: "{{ case3_messages | default([]) + ['CSV column ' + item.column + ': Rule \"' + item.rule_name + '\" created on DG \"' + item.device_group + '\" (4/4 match, diff schedule)'] }}"
+      loop: "{{ case3_rules | default([]) }}"
+      when: case3_rules is defined and case3_rules | length > 0
+
+    - name: Prepare case1 messages (3/4 core match)
+      set_fact:
+        case1_messages: "{{ case1_messages | default([]) + ['CSV column ' + item.column + ': Rule \"' + item.rule_name + '\" created on DG \"' + item.device_group + '\" (3/4 match)'] }}"
+      loop: "{{ case1_rules | default([]) }}"
+      when: case1_rules is defined and case1_rules | length > 0
+
+    - name: Prepare remaining rules messages
+      set_fact:
+        remaining_messages: "{{ remaining_messages | default([]) + ['CSV column ' + item.column + ': Rule \"' + item.rule_name + '\" created on DG \"' + item.device_group + '\" (new rule)'] }}"
+      loop: "{{ remaining_rules | default([]) }}"
+      when: remaining_rules is defined and remaining_rules | length > 0
+
+    ## Print report 
+    - name: Report summary
+      vars:
+        msg:
+          - "===== RULE UPDATE AND CREATION REPORT ====="
+          - "--- UPDATED RULES (MERGED) ---"
+          - "{{ case2_messages | default(['None']) }}"
+          - "--- NEW RULES CREATED ---"
+          - "{{ case3_messages | default(['None']) + case1_messages | default([]) + remaining_messages | default([]) }}"
+      debug:
+        msg: "{{ msg.split('\n') }}"
+
+    ### Commit config on Panorama
+    - name: Commit candidate configs on Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: '{{ device }}'
+        admins: '{{ panos_username }}'
+      register: commitresults
+      when: mapped_rules | length > 0  
+
+    ### Push config to device groups
+    - name: Get device groups from Panorama
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ device }}"
+        state: "gathered"
+        gathered_filter: "*"
+      register: device_groups
+
+    - name: Push device group configs
+      paloaltonetworks.panos.panos_commit_push:
+        provider: '{{ device }}'
+        style: 'device group'
+        admins: '{{ panos_username }}'
+        name: '{{ item.name }}'
+      loop: "{{ device_groups.gathered }}"

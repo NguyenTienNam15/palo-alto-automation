@@ -1,0 +1,125 @@
+{%- set result = [] -%}
+{%- for map_rule in mapped_rules -%}
+  {%- set best_match = {'rule': None, 'match_count': 0, 'core_count': 0, 'has_schedule_match': false, 'found': false} -%}
+  {%- for rc in sec_rules.results -%}
+    {%- if rc.item == map_rule.device_group -%}
+      {%- for sec_rule in rc.gathered -%}
+        {# Chỉ so sánh rule có cùng action #}
+        {%- if sec_rule.action is defined and map_rule.action is defined and sec_rule.action == map_rule.action -%}
+          {# Sử dụng mảng matches để theo dõi các trường khớp #}
+          {%- set matches = [] -%}
+          {%- set core_matches = [] -%}
+          
+          {# Kiểm tra source_ip khớp #}
+          {%- if map_rule.source_ip|sort == sec_rule.source_ip|sort -%}
+            {%- set _ = matches.append('source_ip') -%}
+            {%- set _ = core_matches.append('source_ip') -%}
+          {%- endif -%}
+        
+          {# Kiểm tra destination_ip khớp #}
+          {%- if map_rule.destination_ip|sort == sec_rule.destination_ip|sort -%}
+            {%- set _ = matches.append('destination_ip') -%}
+            {%- set _ = core_matches.append('destination_ip') -%}
+          {%- endif -%}
+        
+          {# Kiểm tra application khớp #}
+          {%- if map_rule.application|list|sort == sec_rule.application|sort -%}
+            {%- set _ = matches.append('application') -%}
+            {%- set _ = core_matches.append('application') -%}
+          {%- endif -%}
+        
+          {# Kiểm tra service khớp #}
+          {%- if map_rule.service|sort == sec_rule.service|sort -%}
+            {%- set _ = matches.append('service') -%}
+            {%- set _ = core_matches.append('service') -%}
+          {%- endif -%}
+
+          {# Kiểm tra schedule khớp - xử lý cả trường hợp None và empty #}
+          {%- set schedule_match = false -%}
+          {%- if (sec_rule.schedule is undefined or sec_rule.schedule is none or sec_rule.schedule == 'None' or sec_rule.schedule == '') and (map_rule.schedule is none or map_rule.schedule == 'None' or map_rule.schedule == '') -%}
+            {%- set schedule_match = true -%}
+            {%- set _ = matches.append('schedule') -%}
+          {%- elif sec_rule.schedule is defined and sec_rule.schedule is not none and sec_rule.schedule != 'None' and sec_rule.schedule != '' and map_rule.schedule == sec_rule.schedule -%}
+            {%- set schedule_match = true -%}
+            {%- set _ = matches.append('schedule') -%}
+          {%- endif -%}
+
+          {# Kiểm tra xem có phải là match tốt hơn không #}
+          {%- if core_matches|length > best_match.core_count or 
+                 (core_matches|length == best_match.core_count and schedule_match and not best_match.has_schedule_match) or
+                 (core_matches|length == best_match.core_count and schedule_match == best_match.has_schedule_match and matches|length > best_match.match_count) -%}
+            {%- set _ = best_match.__setitem__('rule', sec_rule) -%}
+            {%- set _ = best_match.__setitem__('match_count', matches|length) -%}
+            {%- set _ = best_match.__setitem__('core_count', core_matches|length) -%}
+            {%- set _ = best_match.__setitem__('has_schedule_match', schedule_match) -%}
+            {%- set _ = best_match.__setitem__('found', true) -%}
+          {%- endif -%}
+        {%- endif -%} {# Kết thúc kiểm tra cùng action #}
+      {%- endfor -%}
+    {%- endif -%}
+  {%- endfor -%}
+
+  {# Xử lý best match đã tìm thấy #}
+  {%- if best_match.found -%}
+    {%- set sec_rule = best_match.rule -%}
+    {%- set core_count = best_match.core_count -%}
+    {%- set has_schedule_match = best_match.has_schedule_match -%}
+    
+    {# Trường hợp 2: Nếu trùng 4/4 trường core và có schedule thì merge #}
+    {%- if core_count == 4 and has_schedule_match -%}
+      {%- set policy_dict = {
+            'column': map_rule.column,
+            'rule_name': sec_rule.rule_name,
+            'device_group': map_rule.device_group,
+            'source_ip': map_rule.source_ip,
+            'destination_ip': map_rule.destination_ip,
+            'application': map_rule.application,
+            'service': map_rule.service,
+            'schedule': map_rule.schedule,
+            'refer_rule': map_rule.rule_name,
+            'location': map_rule.location,
+            'action_type': 'merge'
+        } -%}
+      {%- set _ = result.append(policy_dict) -%}
+    
+    {# Trường hợp 3: Nếu trùng 4/4 trường core nhưng khác schedule thì tạo rule mới #}
+    {%- elif core_count == 4 and not has_schedule_match -%}
+      {%- set policy_dict = {
+            'column': map_rule.column,
+            'rule_name': map_rule.rule_name,
+            'device_group': map_rule.device_group,
+            'source_ip': map_rule.source_ip,
+            'destination_ip': map_rule.destination_ip,
+            'application': map_rule.application,
+            'service': map_rule.service,
+            'schedule': map_rule.schedule,
+            'description': map_rule.description,
+            'refer_rule': 'new_rule_' + map_rule.rule_name,
+            'location': map_rule.location,
+            'action_type': 'create'
+        } -%}
+      {%- set _ = result.append(policy_dict) -%}
+    
+    {# Trường hợp 1: Nếu trùng 3/4 trường core và khác schedule thì tạo rule mới #}
+    {%- elif core_count == 3 and not has_schedule_match -%}
+      {%- set policy_dict = {
+            'column': map_rule.column,
+            'rule_name': map_rule.rule_name,
+            'device_group': map_rule.device_group,
+            'source_ip': map_rule.source_ip,
+            'destination_ip': map_rule.destination_ip,
+            'application': map_rule.application,
+            'service': map_rule.service,
+            'schedule': map_rule.schedule,
+            'description': map_rule.description,
+            'refer_rule': 'new_rule_' + map_rule.rule_name,
+            'location': map_rule.location,
+            'action_type': 'create'
+        } -%}
+      {%- set _ = result.append(policy_dict) -%}
+    {%- endif -%}
+  {%- else -%}
+    {# Không tìm thấy rule nào khớp (thường là rule mới hoàn toàn) - không cần thêm vào result vì sẽ được xử lý bởi applying_policies #}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

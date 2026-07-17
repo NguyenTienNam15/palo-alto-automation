@@ -1,0 +1,9 @@
+{%- set result = [] -%}
+{%- for services in gather_new_svc_from_csv -%}
+  {%- if services | trim != '' -%}
+    {%- for svc in  services | split(',') -%}
+      {%- set _ = result.append(svc) -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}

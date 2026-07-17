@@ -1,0 +1,25 @@
+{# templates/map_service.j2 #}
+{%- set result = [] -%}
+{%- set services = item.value.Service | split(',') -%}
+{%- for service in services -%}
+  {%- if service | trim != '' -%}
+    {%- if '/' in service | trim -%}
+      {%- set protocol, port = (service | trim).split('/') -%}
+      {%- set matched = [false] -%}
+      {%- for fw_svc in service_objects.gathered -%}
+        {%- if fw_svc.protocol == protocol and fw_svc.destination_port == port and not matched[0] -%}
+          {%- set _ = result.append(fw_svc.name) -%}
+          {%- set _ = matched.__setitem__(0, true) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if not matched[0] -%}
+        {%- set _ = result.append('service-' + protocol + '-' + port) -%}
+      {%- endif -%}
+    {%- else -%}
+      {%- set _ = result.append(service) -%}
+    {%- endif -%}
+  {%- else -%}
+    {%- set _ = result.append('application-default') -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ result }}
